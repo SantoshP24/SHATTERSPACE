@@ -1,0 +1,45 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Launch Kessler AI (Play Mode)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/main.py",
+            "args": ["--mode", "player"],
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "Launch Kessler AI (AI Demo Mode)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/main.py",
+            "args": ["--mode", "ai"],
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "Launch Kessler AI (Survival Mode)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/main.py",
+            "args": ["--mode", "survival"],
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "Launch Kessler AI (Co-op / Race Mode)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/main.py",
+            "args": ["--mode", "coop"],
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "Run All Tests (Pytest)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "args": ["tests", "-v"],
+            "console": "integratedTerminal"
+        }
+    ]
+}

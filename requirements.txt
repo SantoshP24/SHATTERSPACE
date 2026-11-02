@@ -1,0 +1,5 @@
+# Kessler AI Game Dependencies
+pygame>=2.5.0
+numpy>=1.24.0
+kesslergame>=2.4.0
+pytest>=7.0.0

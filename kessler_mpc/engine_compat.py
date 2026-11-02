@@ -13,5 +13,12 @@ def import_engine():
         m.Canvas = object
         m.NW = "nw"
         sys.modules["tkinter"] = m
+    try:
+        import inputs  # noqa: F401
+    except Exception:
+        inp = types.ModuleType("inputs")
+        inp.get_gamepad = lambda: []
+        inp.devices = types.SimpleNamespace(gamepads=[])
+        sys.modules["inputs"] = inp
     import kesslergame
     return kesslergame
