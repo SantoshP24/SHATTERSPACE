@@ -1,7 +1,8 @@
-"""Kessler AI: The Playable Space Survival Game.
+"""Kessler AI: The Playable Autonomous Space Survival Game.
 
 Main entry point. Launches the interactive Pygame application.
-Supports player survival, autonomous Kessler AI demo mode, endless challenge, and co-op.
+Features fully autonomous spaceship control with MPC trajectory planning,
+A* route generation, threat ranking, countdown timer survival, and emergency collision override.
 """
 from __future__ import annotations
 
@@ -13,12 +14,18 @@ from kessler_mpc.settings import DifficultyLevel, GameSettings
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Kessler AI: Orbital Survival Game")
+    parser = argparse.ArgumentParser(description="Kessler AI: Autonomous Asteroid Survival Game")
     parser.add_argument(
         "--mode",
-        choices=["player", "ai", "survival", "coop"],
-        default="player",
-        help="Initial game mode to launch into directly (player, ai, survival, coop)",
+        choices=["ai", "player", "coop"],
+        default="ai",
+        help="Initial game mode (ai: Autonomous Survival [default], player: Manual Pilot, coop: Dual Mode)",
+    )
+    parser.add_argument(
+        "--timer",
+        type=float,
+        default=180.0,
+        help="Countdown survival timer in seconds (default: 180.0)",
     )
     parser.add_argument(
         "--difficulty",
@@ -50,20 +57,19 @@ def main():
         fullscreen=args.fullscreen,
         sfx_enabled=not args.no_sound,
         difficulty=diff_map.get(args.difficulty, DifficultyLevel.STANDARD),
+        countdown_duration=args.timer,
         show_debug_overlay=not args.no_overlay,
     )
 
     app = KesslerGameApp(settings=settings)
 
-    # If launched directly into a specific mode, start right away
+    # Launch into selected mode (defaulting to Autonomous AI)
     mode_map = {
+        "ai": GameMode.AUTONOMOUS,
         "player": GameMode.PLAYER,
-        "ai": GameMode.AI_DEMO,
-        "survival": GameMode.SURVIVAL,
         "coop": GameMode.COOP,
     }
-    if args.mode in mode_map:
-        app.start_game(mode_map[args.mode])
+    app.start_game(mode_map.get(args.mode, GameMode.AUTONOMOUS))
 
     app.run()
 

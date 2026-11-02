@@ -1,27 +1,26 @@
 """Asteroid and space debris management for Kessler AI survival game.
 
 Implements procedural rock silhouettes, realistic rotation, exact engine fragmentation
-(3 child asteroids splitting with +/-15 deg fan out), and debris state adapters.
+(3 child asteroids splitting with +/-15 deg fan out), unique asteroid tracking to prevent
+duplicate scoring, and safe spawning to prevent unavoidable collisions.
 """
 from __future__ import annotations
 
 import math
 import random
-from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 import numpy as np
 import pygame
 
-
 # Size mapping matching KesslerGame / Asteroid dynamics
 SIZE_RADII = {1: 15.0, 2: 30.0, 3: 50.0, 4: 80.0}
 SIZE_MASS = {1: 25.0, 2: 75.0, 3: 200.0, 4: 600.0}
-SIZE_SCORES = {1: 100, 2: 50, 3: 25, 4: 10}
+DEFAULT_SIZE_SCORES = {1: 200, 2: 100, 3: 50, 4: 25}
 
 
 class Asteroid:
-    """Individual asteroid / debris object with procedural polygon geometry."""
+    """Individual asteroid / debris object with procedural polygon geometry and unique ID."""
 
     def __init__(
         self,
@@ -29,7 +28,10 @@ class Asteroid:
         velocity: Tuple[float, float],
         size: int = 3,
         map_size: Tuple[float, float] = (1000.0, 800.0),
+        uid: int = 0,
+        score_table: Optional[Dict[int, int]] = None,
     ):
+        self.uid = uid
         self.x = float(position[0])
         self.y = float(position[1])
         self.vx = float(velocity[0])
@@ -37,9 +39,10 @@ class Asteroid:
         self.size = max(1, min(4, int(size)))
         self.map_w, self.map_h = map_size
 
+        scores = score_table or DEFAULT_SIZE_SCORES
         self.radius = SIZE_RADII.get(self.size, 20.0 * self.size)
         self.mass = SIZE_MASS.get(self.size, 50.0 * self.size)
-        self.score_value = SIZE_SCORES.get(self.size, 20)
+        self.score_value = scores.get(self.size, 25)
 
         # Rotation and visual styling
         self.rotation_angle = random.uniform(0, 360.0)
@@ -118,6 +121,7 @@ class Asteroid:
     def to_dict(self) -> dict:
         """Dictionary representation matching kesslergame / world adapter."""
         return {
+            "id": self.uid,
             "position": (self.x, self.y),
             "velocity": (self.vx, self.vy),
             "speed": self.speed,
@@ -128,53 +132,101 @@ class Asteroid:
 
 
 class DebrisManager:
-    """Manages spawning, tracking, and fragmentation of all active asteroids."""
+    """Manages spawning, tracking, scoring, and fragmentation of all active asteroids."""
 
-    def __init__(self, map_size: Tuple[float, float] = (1000.0, 800.0)):
+    def __init__(
+        self,
+        map_size: Tuple[float, float] = (1000.0, 800.0),
+        score_table: Optional[Dict[int, int]] = None,
+    ):
         self.map_w, self.map_h = map_size
+        self.score_table = score_table or dict(DEFAULT_SIZE_SCORES)
         self.asteroids: List[Asteroid] = []
+        self._next_uid: int = 1
+        self.scored_uids: Set[int] = set()
 
     def clear(self) -> None:
         self.asteroids.clear()
+        self.scored_uids.clear()
+        self._next_uid = 1
+
+    def award_points(self, asteroid: Asteroid) -> int:
+        """Award points once per asteroid; return 0 if already scored."""
+        if asteroid.uid in self.scored_uids:
+            return 0
+        self.scored_uids.add(asteroid.uid)
+        return self.score_table.get(asteroid.size, 25)
 
     def spawn_asteroid(
         self,
         position: Optional[Tuple[float, float]] = None,
         velocity: Optional[Tuple[float, float]] = None,
         size: int = 3,
+        avoid_pos: Optional[Tuple[float, float]] = None,
+        min_distance: float = 220.0,
     ) -> Asteroid:
-        """Spawn a new asteroid, defaulting to random edges if position is omitted."""
+        """Spawn an asteroid, guaranteeing safe distance and non-instant-collision trajectories."""
+        uid = self._next_uid
+        self._next_uid += 1
+
         if position is None:
-            # Spawn along one of the 4 outer screen borders
-            edge = random.randint(0, 3)
-            if edge == 0:  # Top
-                x = random.uniform(0, self.map_w)
-                y = 5.0
-            elif edge == 1:  # Bottom
-                x = random.uniform(0, self.map_w)
-                y = self.map_h - 5.0
-            elif edge == 2:  # Left
-                x = 5.0
-                y = random.uniform(0, self.map_h)
-            else:  # Right
-                x = self.map_w - 5.0
-                y = random.uniform(0, self.map_h)
-            position = (x, y)
+            # Try up to 10 candidates along perimeter until safe distance from avoid_pos
+            best_pos = None
+            for _ in range(12):
+                edge = random.randint(0, 3)
+                if edge == 0:  # Top
+                    cand = (random.uniform(0, self.map_w), 5.0)
+                elif edge == 1:  # Bottom
+                    cand = (random.uniform(0, self.map_w), self.map_h - 5.0)
+                elif edge == 2:  # Left
+                    cand = (5.0, random.uniform(0, self.map_h))
+                else:  # Right
+                    cand = (self.map_w - 5.0, random.uniform(0, self.map_h))
+
+                if avoid_pos is not None:
+                    d = math.hypot(cand[0] - avoid_pos[0], cand[1] - avoid_pos[1])
+                    if d >= min_distance:
+                        best_pos = cand
+                        break
+                else:
+                    best_pos = cand
+                    break
+
+            position = best_pos or (5.0, 5.0)
 
         if velocity is None:
-            # Aim generally inward toward the center arena
-            target_x = self.map_w * 0.5 + random.uniform(-200, 200)
-            target_y = self.map_h * 0.5 + random.uniform(-200, 200)
+            # Aim generally inward, but divert away from direct line to ship
+            target_x = self.map_w * 0.5 + random.uniform(-250, 250)
+            target_y = self.map_h * 0.5 + random.uniform(-250, 250)
+
+            if avoid_pos is not None:
+                # If target point is too close to ship, offset it
+                if math.hypot(target_x - avoid_pos[0], target_y - avoid_pos[1]) < min_distance:
+                    target_x = (target_x + 300.0) % self.map_w
+                    target_y = (target_y + 300.0) % self.map_h
+
             angle = math.atan2(target_y - position[1], target_x - position[0])
-            spd = random.uniform(40.0, 110.0)
+            spd = random.uniform(40.0, 105.0)
             velocity = (math.cos(angle) * spd, math.sin(angle) * spd)
 
-        ast = Asteroid(position=position, velocity=velocity, size=size, map_size=(self.map_w, self.map_h))
+        ast = Asteroid(
+            position=position,
+            velocity=velocity,
+            size=size,
+            map_size=(self.map_w, self.map_h),
+            uid=uid,
+            score_table=self.score_table,
+        )
         self.asteroids.append(ast)
         return ast
 
-    def populate_scenario(self, count: int = 6, seed: Optional[int] = None) -> None:
-        """Create a balanced initial set of asteroids."""
+    def populate_scenario(
+        self,
+        count: int = 6,
+        seed: Optional[int] = None,
+        avoid_pos: Tuple[float, float] = (500.0, 400.0),
+    ) -> None:
+        """Create a balanced initial set of asteroids spaced safely away from ship."""
         if seed is not None:
             random.seed(seed)
 
@@ -182,15 +234,20 @@ class DebrisManager:
         sizes = [4, 3, 3, 2, 2, 1]
         for i in range(count):
             size = sizes[i % len(sizes)]
-            # Place away from central ship spawn (500, 400)
+            # Place at safe distance from ship spawn
             while True:
                 x = random.uniform(60, self.map_w - 60)
                 y = random.uniform(60, self.map_h - 60)
-                if math.hypot(x - 500.0, y - 400.0) > 160.0:
+                if math.hypot(x - avoid_pos[0], y - avoid_pos[1]) > 180.0:
                     break
             ang = random.uniform(0, 2 * math.pi)
-            spd = random.uniform(45.0, 95.0)
-            self.spawn_asteroid(position=(x, y), velocity=(math.cos(ang) * spd, math.sin(ang) * spd), size=size)
+            spd = random.uniform(45.0, 90.0)
+            self.spawn_asteroid(
+                position=(x, y),
+                velocity=(math.cos(ang) * spd, math.sin(ang) * spd),
+                size=size,
+                avoid_pos=avoid_pos,
+            )
 
     def split_asteroid(self, asteroid: Asteroid, split_angle_deg: float = 15.0) -> List[Asteroid]:
         """Split asteroid into 3 children with +/-15 deg fan out if size > 1."""
@@ -213,14 +270,23 @@ class DebrisManager:
         ]
 
         for ang in angles:
-            # Slight random speed variance for natural movement
-            spd = max(30.0, parent_spd * random.uniform(0.9, 1.15))
+            spd = max(30.0, parent_spd * random.uniform(0.92, 1.12))
             vx = math.cos(ang) * spd
             vy = math.sin(ang) * spd
-            # Child spawn slightly offset along fan angle
             cx = asteroid.x + math.cos(ang) * (asteroid.radius * 0.4)
             cy = asteroid.y + math.sin(ang) * (asteroid.radius * 0.4)
-            child = Asteroid(position=(cx, cy), velocity=(vx, vy), size=new_size, map_size=(self.map_w, self.map_h))
+
+            uid = self._next_uid
+            self._next_uid += 1
+
+            child = Asteroid(
+                position=(cx, cy),
+                velocity=(vx, vy),
+                size=new_size,
+                map_size=(self.map_w, self.map_h),
+                uid=uid,
+                score_table=self.score_table,
+            )
             self.asteroids.append(child)
             children.append(child)
 

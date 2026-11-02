@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Optional
 
 
 @dataclass
@@ -17,10 +18,15 @@ class AdaptiveRisk:
         self.cfg = cfg
         self.lmax = int(cfg["initial_lives"] or 0)
 
-    def update(self, lives: int) -> RiskState:
+    def update(self, lives: int, health: Optional[float] = None) -> RiskState:
         c = self.cfg
         self.lmax = max(self.lmax, lives, 1)
-        q = lives / self.lmax
+        q_lives = lives / self.lmax
+        if health is not None:
+            q_health = max(0.0, min(1.0, health / 100.0))
+            q = min(q_lives, q_health)
+        else:
+            q = q_lives
         fr = c["aim_radius_fraction"]
         if not c["adaptive_risk"]:
             return RiskState(0, 1.0, fr[0], q)

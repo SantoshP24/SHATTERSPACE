@@ -1,31 +1,37 @@
-# Kessler AI: Deep-Space Orbital Survival Game
+# Kessler AI: Autonomous Asteroid Survival Game
 
-An interactive, real-time top-down 2D space-survival game powered by **Model Predictive Control (MPC)**, **A\* Global Route Planning**, **Threat Assessment**, **Adaptive Risk Modeling**, and an **Emergency Collision-Safety Override**.
+A fully autonomous, real-time 2D space-survival game powered by **Model Predictive Control (MPC)**, **A\* Global Route Planning**, **Threat Assessment**, **Adaptive Risk Modeling**, and an **Emergency Collision-Safety Override**.
 
 Built with **Pygame** and integrated directly with the verified **Thales Kessler MPC** navigation and physics architecture.
 
 ---
 
 ## Table of Contents
-1. [Overview & Features](#overview--features)
+1. [Overview & Autonomous Gameplay](#overview--autonomous-gameplay)
 2. [Quick Start & Launch Instructions](#quick-start--launch-instructions)
-3. [Flight Controls](#flight-controls)
-4. [Game Modes](#game-modes)
-5. [AI Architecture & Integration](#ai-architecture--integration)
+3. [Game Modes](#game-modes)
+4. [AI Controller & Behavior States](#ai-controller--behavior-states)
+5. [Scoring & Difficulty Escalation](#scoring--difficulty-escalation)
 6. [Software Architecture & Modules](#software-architecture--modules)
 7. [Testing & Validation](#testing--validation)
 8. [Standalone Windows Executable](#standalone-windows-executable)
 
 ---
 
-## Overview & Features
+## Overview & Autonomous Gameplay
 
-- **Player Spaceship**: Newtonian inertia, main thrusters, kinetic reverse brakes, attitude rotation, crosshair mouse aiming, plasma laser cannons, and afterburner boost with active cooldown.
-- **Autonomous Kessler AI**: Real-time debris tracking, threat ranking ($T_i = 0.50 C + 0.35 U + 0.15 G$), A\* global pathfinding through dynamic hazard fields toward the Safe Zone, local MPC trajectory optimization over candidate sequences, adaptive life-dependent risk scaling, and emergency collision avoidance overrides.
-- **Space Environment**: Multi-layer parallax starfield (twinkling stars, colored gas nebulae, celestial gas giant planet silhouette), procedural jagged rock asteroids (sizes 1 to 4 with rotational spin and impact craters), exact engine child fragmentation ($\pm 15^\circ$ fan out upon destruction), and floating space debris.
-- **Safe Zone Sanctuary**: Orbital sanctuary beacon with a pulsating defensive energy shield. Ships entering the sanctuary initiate an automated docking timer (3.0s); holding position inside awards victory.
-- **Visuals & Procedural Audio**: Particle engine generating rocket plumes, electric blue boost fire, shockwave rings, shield ripples, and fiery explosions. Synthesized sci-fi procedural audio built using NumPy and Pygame Mixer (no missing external asset dependencies).
-- **Toggleable AI Debug Telemetry (`F1` / `TAB`)**: In-world rendering of the A\* route, MPC candidate trajectory arcs, asteroid threat vectors with $TTC$ readouts, detection radius, and target lock-on reticle.
+- **100% Autonomous Spaceship**: The spaceship is controlled entirely by AI. No player input is required for movement, steering, aiming, firing, or dodging.
+- **180-Second Countdown Survival Objective**: The AI must survive an intense, escalating 180-second countdown while actively hunting down and shattering hazardous orbital debris to maximize its score.
+- **Victory & Defeat Conditions**:
+  - **VICTORY**: The AI successfully navigates and survives the full 180.0-second orbital hazard countdown.
+  - **DEFEAT**: Critical hull failure occurs (ship health reaches 0).
+- **Four Explicit AI Behavior States**:
+  - **`ATTACK`**: When conditions are safe, the AI tracks targets, computes the lead-intercept angle (`aim_point_bearing_deg`), advances toward the firing envelope, and fires plasma cannons automatically.
+  - **`EVADE`**: When an imminent collision hazard is predicted ($TTC \le 0.75$s or $TTC \le 1.5$s with high collision risk), the emergency safety override takes complete control, executing high-G tangential escape maneuvers and boost surges.
+  - **`SURVIVE`**: Triggered when health is low ($\le 40\%$) or hazard density is extreme. The AI maintains large standoff safety margins, backs away from asteroid centroids, and avoids hazardous child debris splits.
+  - **`REPOSITION`**: Global A\* route planner maps out safe corridors through the moving debris field to open, low-density space, with the MPC smoothing trajectory waypoints.
+- **Space Environment & Physics**: Multi-layer parallax starfield, colored nebulae, celestial gas giant planet, procedural jagged rock asteroids (sizes 1 to 4 with rotational spin and craters), exact engine child fragmentation ($\pm 15^\circ$ fan out upon destruction), and floating space debris.
+- **HUD & Telemetry**: Large digital countdown timer (`MM:SS.S`), real-time health bar, shield gauge, score, kill counter, weapon accuracy, damage taken, and toggleable (`F1` / `TAB`) debug overlay showing predicted collision points, threat vectors, A\* path, and MPC trajectory arcs.
 
 ---
 
@@ -44,131 +50,139 @@ pip install -r requirements.txt
 
 ### Step 2: Launch the Game
 
-#### Method A: Windows Batch Launcher (One-Click)
-Double-click `run_game.bat` in File Explorer, or run in cmd:
+#### Method A: Windows One-Click Batch Script
+Double-click `run_game.bat` in File Explorer, or run in Command Prompt:
 ```cmd
 run_game.bat
 ```
 
-#### Method B: Windows PowerShell Launcher
+#### Method B: Windows PowerShell Script
 ```powershell
 .\run_game.ps1
 ```
 
 #### Method C: Python CLI
 ```powershell
-# Launch into the Main Menu
+# Launch into the Autonomous Survival Game (Default: 180s Countdown)
 python main.py
 
-# Launch directly into a specific mode
-python main.py --mode player       # Player Survival Mode
-python main.py --mode ai           # Autonomous AI Demonstration
-python main.py --mode survival     # Endless Survival Challenge
-python main.py --mode coop         # Player + AI Co-op / Race
+# Custom countdown timer (e.g. 60 seconds, 120 seconds, 300 seconds)
+python main.py --timer 180.0
 
-# Optional CLI Arguments:
-#   --difficulty [casual | standard | hardcore | kessler]
+# Optional Modes & Difficulty:
+python main.py --mode ai --difficulty kessler    # Extreme debris density
+python main.py --mode player                    # Manual pilot testing mode
+python main.py --mode coop                      # Dual player + AI mode
+
+# Optional Flags:
 #   --width 1000 --height 800
 #   --fullscreen
 #   --no-sound
 #   --no-overlay
 ```
 
-#### Method D: Visual Studio Code
-Open the project folder in VS Code and press `F5` to select one of the pre-configured launch tasks in `.vscode/launch.json`:
+#### Method D: Standalone Executable (No Python Required)
+You can directly run the pre-compiled Windows executable:
+```cmd
+.\dist\KesslerAI\KesslerAI.exe
+```
+
+#### Method E: Visual Studio Code
+Open the project folder in VS Code and press `F5` to select from `.vscode/launch.json`:
+- **Launch Kessler AI (AI Demo Mode)** (Default Autonomous 180s Survival)
 - **Launch Kessler AI (Play Mode)**
-- **Launch Kessler AI (AI Demo Mode)**
-- **Launch Kessler AI (Survival Mode)**
-- **Launch Kessler AI (Co-op / Race Mode)**
 - **Run All Tests (Pytest)**
-
----
-
-## Flight Controls
-
-| Control | Action |
-|---|---|
-| **W** or **Up Arrow** | Main Thrusters (Forward Acceleration) |
-| **S** or **Down Arrow** | Reverse Thrusters / Kinetic Brakes |
-| **A** / **D** or **Left** / **Right** | Rotational Attitude Control (Turn Left / Right) |
-| **Mouse Cursor** | Crosshair Aiming (Ship rotates smoothly toward cursor) |
-| **Spacebar** or **Left Click** | Fire High-Velocity Plasma Cannon |
-| **Left Shift** or **Right Shift** | Activate Afterburner Boost ($1.85\times$ thrust multiplier) |
-| **F1** or **TAB** | Toggle AI Telemetry & Trajectory Debug Overlay |
-| **ESC** or **P** | Pause Game / Return to Menu |
 
 ---
 
 ## Game Modes
 
-1. **Player Survival Mode (`MODE_PLAYER`)**:
-   Pilot your interceptor through dangerous orbital debris, eliminate threatening asteroids, manage shield and boost energy, and navigate safely into the orbital sanctuary to dock.
-2. **AI Demonstration Mode (`MODE_AI_DEMO`)**:
-   Observe the autonomous Kessler AI pilot the spacecraft in real-time. Toggle the debug overlay (`F1`) to see its internal decision-making: live threat rankings, A\* waypoints, MPC trajectory evaluations, and emergency collision overrides.
-3. **Endless Survival Challenge (`MODE_SURVIVAL`)**:
-   Survive escalating waves of orbital debris. Every 15 seconds, hazard speed and asteroid density increase. Compete for the highest survival score.
-4. **Player + AI Co-op / Race Mode (`MODE_COOP`)**:
-   Both the Player ship and the autonomous Kessler AI ship operate together in the arena. Cooperate to shatter large hazards or race to reach and dock in the sanctuary first.
+1. **Autonomous AI Survival (Default / Primary Mode)**:
+   The Kessler AI autonomously pilots the interceptor through high-velocity asteroid swarms, aims and fires plasma cannons, evades collisions, and attempts to survive the full 180-second countdown.
+2. **Manual Pilot Survival**:
+   Take manual control of the spaceship with WASD / Arrow keys, mouse crosshair steering, spacebar firing, and Shift boost to test your pilot survival skills against the AI's high scores.
+3. **Player + AI Dual Mode**:
+   Both the Player ship and the autonomous Kessler AI ship operate together in the arena simultaneously.
 
 ---
 
-## AI Architecture & Integration
-
-The Kessler AI operates on a hierarchical multi-tiered control architecture:
+## AI Controller & Behavior States
 
 ```
 +------------------------------------------------------------------------+
 |                          LIVE GAME SIMULATION                          |
-|   (Ship Pose, Asteroid Positions & Velocities, Safe Zone Sanctuary)   |
+|         (Ship Pose, Asteroid Tracks, Velocities, Health & Shields)     |
 +------------------------------------------------------------------------+
                                     |
                                     v
 +------------------------------------------------------------------------+
-|                      1. THREAT EVALUATOR (threat.py)                   |
-|   - Minimum Separation (d_min) & Time to Closest Approach (t_min)     |
-|   - Collision Risk: C = clip((safe - d_eff) / band, 0, 1)              |
-|   - Urgency:        U = clip(1 - TTC / H, 0, 1)                        |
-|   - Geometric:      G = 0.6*(size/4)*prox + 0.4*depth                  |
-|   - Overall Threat: T = 0.50 C + 0.35 U + 0.15 G                       |
-|   - Critical TTC <= 0.75s, Urgent TTC <= 1.50s                         |
+|                      1. THREAT ASSESSMENT (threat.py)                  |
+|   - Relative velocity, Time to Closest Approach (TCA), Min Separation  |
+|   - Collision Risk (C), Urgency (U), Geometry (G), Combined Score (T)  |
+|   - Identifies Critical Threats (TTC <= 0.75s) & Urgent Threats        |
 +------------------------------------------------------------------------+
-         |                                                 |
-         v                                                 v
-+-----------------------------+           +-----------------------------+
-|   2. A* GLOBAL ROUTE        |           |  3. TARGET SELECTOR         |
-|      (pathfinding.py)       |           |     (targeting.py)          |
-|   - Discretized cost grid   |           |   - Threat-weighted target  |
-|   - Hazard corridor penalty |           |   - Lead intercept point    |
-|   - Line-of-sight smoothing |           |   - Fragmentation safety    |
-|   - Navigates to Safe Zone  |           |   - Small asteroid tie band |
-+-----------------------------+           +-----------------------------+
-         \                                                 /
-          \                                               /
-           v                                             v
+                                    |
+        +---------------------------+---------------------------+
+        |                                                       |
+        v                                                       v
++-----------------------------------+   +-----------------------------------+
+|   2. A* GLOBAL ROUTE PLANNER      |   |   3. THREAT TARGET SELECTOR       |
+|      (pathfinding.py)             |   |      (targeting.py)               |
+|   - Dynamic hazard-cost corridors |   |   - Predictive moving target lead |
+|   - Finds clearest open sectors   |   |   - Fragmentation safety check    |
+|   - Line-of-sight path smoothing  |   |   - Small-asteroid tie breakers   |
++-----------------------------------+   +-----------------------------------+
+        \                                                       /
+         \                                                     /
+          v                                                   v
 +------------------------------------------------------------------------+
-|             4. MODEL PREDICTIVE CONTROL (mpc_planner.py)               |
+|               4. MODEL PREDICTIVE CONTROL (planner.py)                 |
 |   - Evaluates candidate action sequences over planning horizon         |
-|   - Exact Newtonian ship model (thrust, turn rate, drag, speed limits)  |
-|   - Cost: J = J_collision + J_margin + J_aim + J_terminal + J_switch   |
+|   - Dynamic ship model (thrust, turn rate, drag, speed clamping)       |
 |   - Rejects sequences with predicted collisions                        |
 +------------------------------------------------------------------------+
                                     |
                                     v
 +------------------------------------------------------------------------+
-|            5. COLLISION-SAFETY OVERRIDE (kessler_ai.py)                |
-|   - Takes strict precedence over normal navigation & targeting         |
-|   - Triggers when Critical Threat (TTC <= 0.75s) is detected           |
-|   - Computes tangential escape vector perpendicular to hazard velocity  |
-|   - Executes evasive thrust, turn, and boost if separation is critical  |
+|                      5. BEHAVIOR ARBITRATION                           |
+|   - [EVADE]:       Critical threat detected -> tangential evasion &    |
+|                    safety boost override (strict precedence).          |
+|   - [SURVIVE]:     Low health (<= 40%) or dense hazard cluster ->      |
+|                    defensive standoff, clearance maximization.         |
+|   - [ATTACK]:      Safe conditions & target selected -> lead intercept |
+|                    turn tracking and plasma cannon destruction.        |
+|   - [REPOSITION]:  Relocating through field via A* waypoints to open   |
+|                    sectors of space.                                   |
 +------------------------------------------------------------------------+
                                     |
                                     v
 +------------------------------------------------------------------------+
-|                     6. FIRE CONTROL (firecontrol.py)                   |
-|   - Validates ray intercept against asteroid bounds                    |
-|   - Simulates fragment tracks to ensure child debris does not collide  |
+|                    6. FIRE CONTROL (firecontrol.py)                    |
+|   - Engine-exact raycast against target asteroid radius                |
+|   - Fragment simulation: ensures child debris won't collide with ship  |
 +------------------------------------------------------------------------+
 ```
+
+---
+
+## Scoring & Difficulty Escalation
+
+### Points Table
+- **Size 4 Asteroid (Giant)**: 25 points
+- **Size 3 Asteroid (Large)**: 50 points
+- **Size 2 Asteroid (Medium)**: 100 points
+- **Size 1 Asteroid (Small)**: 200 points
+
+### Anti-Exploitation & Safe Spawning
+- **Unique Asteroid IDs**: Each asteroid and spawned child fragment possesses a distinct UID. Destroyed asteroids are recorded in a scored set, preventing duplicate point awards.
+- **Unavoidable Collision Prevention**: New asteroids spawn at the perimeter at least 220 units away from the ship, with initial velocities oriented away from immediate collision vectors ($> 2.0$s grace).
+
+### Difficulty Curve Over 180 Seconds
+- **Progress Ratio**: $p = 1.0 - (\text{Countdown} / 180.0)$.
+- **Asteroid Density**: Active asteroids scale from initial count (e.g. 6) up to 20+ as the countdown progresses.
+- **Spawn Frequency**: Spawning interval reduces dynamically from 12.0s down to 3.5s.
+- **Velocity Escalation**: Asteroid speed multiplier scales smoothly by $+35\%$ over the course of the match.
+- **Tactical Siren**: An alert klaxon sounds periodically as hazard density escalates.
 
 ---
 
@@ -176,36 +190,34 @@ The Kessler AI operates on a hierarchical multi-tiered control architecture:
 
 ```
 kessler_mpc/
-├── main.py                  # CLI and desktop game launcher entry point
+├── main.py                  # Application entry point with CLI parameters
 ├── run_game.bat             # Windows one-click batch launcher
 ├── run_game.ps1             # Windows PowerShell launcher
 ├── requirements.txt         # Project dependencies
-├── verify_gameplay_loop.py  # Automated full-gameplay integration test script
+├── verify_gameplay_loop.py  # End-to-end autonomous gameplay verification script
 ├── tests/
-│   ├── test_gameplay_systems.py    # 14 tests: controls, collisions, A*, AI, Safe Zone, modes
-│   ├── test_units.py               # 9 tests: closest approach, geometry, risk levels
-│   ├── test_controller_engine.py   # 2 tests: integration against kesslergame engine
-│   └── test_dynamics_vs_engine.py  # 9 tests: ship model dynamics validation
+│   ├── test_gameplay_systems.py    # 19 tests: controls, collisions, A*, AI states, timer, defeat
+│   ├── test_units.py               # 9 tests: geometry, lead intercept, risk levels
+│   ├── test_controller_engine.py   # 5 tests: integration against kesslergame engine
+│   └── test_dynamics_vs_engine.py  # 6 tests: ship model dynamics validation
 └── kessler_mpc/
-    ├── game.py              # Main GameApp loop, state machine & mode manager
-    ├── player.py            # PlayerShip with keyboard, mouse, and boost input
-    ├── spaceship.py         # Newtonian physics, health, shields, lives, boost, laser bullets
-    ├── kessler_ai.py        # Autonomous AI coordinator (A* + MPC + Collision Override)
+    ├── game.py              # Main GameApp loop, countdown timer, VICTORY/DEFEAT state machine
+    ├── kessler_ai.py        # Autonomous AI coordinator (ATTACK, EVADE, REPOSITION, SURVIVE)
     ├── pathfinding.py       # A* global route planner with dynamic hazard corridors
     ├── threat_assessment.py # Per-debris metrics (TCA, min separation, C, U, G, T)
     ├── threat.py            # Vectorized collision prediction & threat equations
     ├── planner.py           # Model Predictive Control trajectory optimizer
     ├── targeting.py         # Threat-ranked target selection & lead intercept
-    ├── risk.py              # Adaptive life-dependent risk multiplier
+    ├── risk.py              # Adaptive life- and health-dependent risk multiplier
     ├── firecontrol.py       # Fragmentation-aware firing decision
     ├── dynamics.py          # Vectorized ship kinematics matching engine rules
-    ├── safe_zone.py         # Sanctuary objective, arrival detection & docking progress
+    ├── spaceship.py         # Newtonian physics, health, shields, boost, plasma bullets
     ├── debris.py            # Procedural asteroid polygons, rotation & engine splitting
     ├── physics.py           # Collision resolution (ship-asteroid, bullet-asteroid, ship-ship)
     ├── visuals.py           # Parallax starfield, nebulae, particles, shockwaves, screen shake
     ├── audio.py             # Procedural sound effects synthesizer (NumPy + Pygame Mixer)
-    ├── ui.py                # Menus, HUD, radar minimap, and toggleable AI telemetry overlay
-    ├── settings.py          # Difficulty presets, visual/audio settings, debug toggles
+    ├── ui.py                # Menus, countdown HUD, AI status badge, radar, telemetry overlay
+    ├── settings.py          # Difficulty presets, countdown duration, visual/audio toggles
     └── engine_compat.py     # Headless engine compatibility & inputs stubbing
 ```
 
@@ -213,7 +225,7 @@ kessler_mpc/
 
 ## Testing & Validation
 
-All 34 tests pass with 100% success rate:
+All 39 unit and system integration tests pass with 100% success rate:
 
 ```powershell
 python -m pytest tests -v
@@ -223,28 +235,33 @@ Output:
 ```
 tests/test_controller_engine.py::test_kills_a_crossing_asteroid_without_dying PASSED
 tests/test_controller_engine.py::test_evades_head_on_big_asteroid PASSED
-tests/test_dynamics_vs_engine.py::test_stationary_ship_matches_engine PASSED
-tests/test_dynamics_vs_engine.py::test_full_thrust_forward_matches_engine PASSED
-tests/test_dynamics_vs_engine.py::test_full_thrust_reverse_matches_engine PASSED
-tests/test_dynamics_vs_engine.py::test_alternating_thrust_matches_engine PASSED
-tests/test_dynamics_vs_engine.py::test_hard_turn_matches_engine PASSED
-tests/test_dynamics_vs_engine.py::test_turn_while_accelerating_matches_engine PASSED
-tests/test_dynamics_vs_engine.py::test_toroidal_wrapping_matches_engine PASSED
+tests/test_controller_engine.py::test_respawn_aware_no_fire_when_crowded_and_survives PASSED
+tests/test_controller_engine.py::test_runtime_per_step_is_practical PASSED
+tests/test_controller_engine.py::test_old_style_dict_state_adapter PASSED
+tests/test_dynamics_vs_engine.py::test_full_thrust_straight PASSED
+tests/test_dynamics_vs_engine.py::test_turn_and_thrust PASSED
+tests/test_dynamics_vs_engine.py::test_coast_and_reverse PASSED
+tests/test_dynamics_vs_engine.py::test_weak_thrust_below_drag PASSED
+tests/test_dynamics_vs_engine.py::test_wrap_around_and_random PASSED
 tests/test_dynamics_vs_engine.py::test_asteroid_tracks_match_engine PASSED
-tests/test_dynamics_vs_engine.py::test_asteroid_wrapping_matches_engine PASSED
 tests/test_gameplay_systems.py::test_player_thrust_and_drag_physics PASSED
 tests/test_gameplay_systems.py::test_player_boost_mechanic PASSED
 tests/test_gameplay_systems.py::test_player_turning PASSED
 tests/test_gameplay_systems.py::test_bullet_asteroid_collision_and_splitting PASSED
 tests/test_gameplay_systems.py::test_ship_asteroid_collision_and_shield_damage PASSED
-tests/test_gameplay_systems.py::test_ship_death_and_lives_decrement PASSED
+tests/test_gameplay_systems.py::test_ship_death_when_health_reaches_zero PASSED
 tests/test_gameplay_systems.py::test_threat_evaluator_metrics PASSED
 tests/test_gameplay_systems.py::test_astar_planner_finds_path PASSED
 tests/test_gameplay_systems.py::test_astar_avoids_large_obstacle PASSED
 tests/test_gameplay_systems.py::test_waypoint_navigator_progression PASSED
 tests/test_gameplay_systems.py::test_safe_zone_docking_and_victory PASSED
 tests/test_gameplay_systems.py::test_emergency_collision_avoidance_trigger PASSED
-tests/test_gameplay_systems.py::test_ai_live_simulation_integration PASSED
+tests/test_gameplay_systems.py::test_ai_behavior_state_survive_on_low_health PASSED
+tests/test_gameplay_systems.py::test_ai_behavior_state_attack_when_safe PASSED
+tests/test_gameplay_systems.py::test_no_duplicate_scoring_for_same_asteroid PASSED
+tests/test_gameplay_systems.py::test_safe_asteroid_spawn_respects_clearance PASSED
+tests/test_gameplay_systems.py::test_countdown_timer_expiration_triggers_victory PASSED
+tests/test_gameplay_systems.py::test_zero_health_triggers_immediate_defeat PASSED
 tests/test_gameplay_systems.py::test_game_app_state_transitions PASSED
 tests/test_units.py::test_closest_approach_head_on PASSED
 tests/test_units.py::test_closest_approach_zero_relative_velocity PASSED
@@ -256,13 +273,13 @@ tests/test_units.py::test_adaptive_risk_levels_with_three_lives PASSED
 tests/test_units.py::test_adaptive_risk_off PASSED
 tests/test_units.py::test_unknown_config_key_rejected PASSED
 
-============================== 34 passed in 3.03s ==============================
+======================== 39 passed, 1 warning in 3.09s ========================
 ```
 
 ---
 
 ## Standalone Windows Executable
 
-The game has been compiled into a standalone Windows directory build using PyInstaller.
-- **Executable path**: `dist\KesslerAI\KesslerAI.exe`
-- You can double-click `KesslerAI.exe` to run the game directly without needing a Python interpreter installed.
+The standalone Windows directory build is available at:
+- **Executable**: `dist\KesslerAI\KesslerAI.exe`
+- Double-click `KesslerAI.exe` to launch directly without requiring Python.

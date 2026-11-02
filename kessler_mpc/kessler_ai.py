@@ -1,6 +1,6 @@
 """Kessler AI Controller with Hierarchical A* Global Navigation,
 Model Predictive Control (MPC) Local Trajectory Planning, and
-Collision-Safety Override for Live Gameplay.
+Collision-Safety Override for Autonomous Asteroid Survival.
 """
 from __future__ import annotations
 
@@ -27,15 +27,15 @@ from .world import World
 
 
 class AIBehaviorState(Enum):
-    NAVIGATING_TO_SAFE_ZONE = "Navigating to Safe Zone"
-    ENGAGING_THREAT = "Engaging Threat"
-    EMERGENCY_AVOIDANCE = "EMERGENCY COLLISION AVOIDANCE"
-    DOCKING = "Docking in Safe Zone"
+    ATTACK = "ATTACK"
+    EVADE = "EVADE"
+    REPOSITION = "REPOSITION"
+    SURVIVE = "SURVIVE"
 
 
 @dataclass
 class AIDebugTelemetry:
-    state: AIBehaviorState = AIBehaviorState.NAVIGATING_TO_SAFE_ZONE
+    state: AIBehaviorState = AIBehaviorState.REPOSITION
     target_asteroid_idx: Optional[int] = None
     target_pos: Optional[Tuple[float, float]] = None
     threat_level: float = 0.0
@@ -53,7 +53,7 @@ class AIDebugTelemetry:
 
 
 class KesslerAIController:
-    """Live interactive controller using Kessler MPC, A* Global Planning, and Collision Override."""
+    """Fully autonomous controller using Kessler MPC, A* Global Planning, and Collision Override."""
 
     def __init__(
         self,
@@ -64,9 +64,9 @@ class KesslerAIController:
     ):
         self.cfg = make_config(**{**(config or {}), **overrides})
         self.map_w, self.map_h = map_size
-        self.safe_zone = safe_zone or SafeZone(center=(self.map_w - 150.0, 150.0), radius=80.0)
+        self.safe_zone = safe_zone
 
-        # Core components
+        # Core modules
         self.threat_eval = ThreatEvaluator(self.cfg)
         self.risk = AdaptiveRisk(self.cfg)
         self.selector = TargetSelector(self.cfg)
@@ -78,10 +78,10 @@ class KesslerAIController:
         # State tracking
         self.telemetry = AIDebugTelemetry()
         self.last_astar_replan_time = -999.0
-        self.astar_replan_interval = 0.5  # Replan global path every 0.5s or on emergency
+        self.astar_replan_interval = 0.6  # Replan global path periodically or on emergency
         self.step_count = 0
 
-    def update_safe_zone(self, safe_zone: SafeZone) -> None:
+    def update_safe_zone(self, safe_zone: Optional[SafeZone]) -> None:
         self.safe_zone = safe_zone
 
     def get_actions(
@@ -89,7 +89,7 @@ class KesslerAIController:
         ship_state: dict,
         game_state: dict,
     ) -> Tuple[float, float, bool, bool]:
-        """Compute (thrust, turn, fire, boost) for live game loop."""
+        """Compute (thrust, turn, fire, boost) for live autonomous game loop."""
         self.step_count += 1
         world = self._build_world(ship_state, game_state)
         return self._decide(world)
@@ -142,11 +142,11 @@ class KesslerAIController:
             vel=vel,
             speed=speed,
             heading=heading,
-            lives=int(ship_state.get("lives", 3)),
+            lives=int(ship_state.get("lives_remaining", ship_state.get("lives", 3))),
             respawning=bool(ship_state.get("is_respawning", False)),
             respawn_left=float(ship_state.get("respawn_time_left", 0.0)),
             can_fire=bool(ship_state.get("can_fire", True)),
-            bullets_remaining=int(ship_state.get("bullets_remaining", 100)),
+            bullets_remaining=int(ship_state.get("bullets_remaining", 250)),
             time=float(game_state.get("time", 0.0)),
             ast_pos=ast_pos,
             ast_vel=ast_vel,
@@ -160,20 +160,42 @@ class KesslerAIController:
             bul_vel=np.zeros((0, 2), dtype=float),
             bul_mass=np.zeros(0, dtype=float),
             random_splits=False,
+            health=float(ship_state.get("health", 100.0)),
+            shields=float(ship_state.get("shields", 100.0)),
         )
 
+    def _find_clearest_sector(self, world: World) -> Tuple[float, float]:
+        """Find the point in the arena that maximizes clearance from all active asteroids."""
+        if world.n_ast == 0:
+            return (self.map_w * 0.5, self.map_h * 0.5)
+
+        # 4x4 candidate grid in the interior
+        xs = np.linspace(self.map_w * 0.15, self.map_w * 0.85, 4)
+        ys = np.linspace(self.map_h * 0.15, self.map_h * 0.85, 4)
+        candidates = [(float(x), float(y)) for x in xs for y in ys]
+
+        best_pt = candidates[0]
+        max_min_dist = -1.0
+
+        for cx, cy in candidates:
+            c_pos = np.array([cx, cy])
+            # Minimum distance from candidate to any asteroid
+            dists = np.linalg.norm(world.ast_pos - c_pos[None, :], axis=1) - world.ast_rad
+            min_d = float(np.min(dists))
+            if min_d > max_min_dist:
+                max_min_dist = min_d
+                best_pt = (cx, cy)
+
+        return best_pt
+
     def _decide(self, world: World) -> Tuple[float, float, bool, bool]:
-        """Main hierarchical decision pipeline."""
+        """Hierarchical autonomous decision pipeline evaluating ATTACK, EVADE, REPOSITION, and SURVIVE."""
         p = world.params
-        risk = self.risk.update(world.lives)
+        risk = self.risk.update(world.lives, world.health)
         raw_threats, threat_list = self.threat_eval.assess_threats(world)
 
-        # 1. Evaluate Safe Zone status
-        in_safe_zone = self.safe_zone.contains_point(world.pos)
-        is_docked = self.safe_zone.is_ship_docked(0)
-
-        # 2. Check Emergency Collision-Safety Override
-        critical_threats = [t for t in threat_list if t.is_critical or (t.is_urgent and t.collision_probability > 0.6)]
+        # 1. Threat Classification & Emergency Override Check
+        critical_threats = [t for t in threat_list if t.is_critical or (t.is_urgent and t.collision_probability > 0.45)]
         emergency_override = len(critical_threats) > 0
 
         # Update telemetry
@@ -185,7 +207,7 @@ class KesslerAIController:
         self.telemetry.threat_level = threat_list[0].overall_threat_score if threat_list else 0.0
         self.telemetry.highest_threat_idx = threat_list[0].asteroid_index if threat_list else None
 
-        # 3. Target selection for weapon firing
+        # 2. Target selection for plasma cannon firing
         target = self.selector.select(world, raw_threats)
         events = bullet_events(world)
 
@@ -196,7 +218,7 @@ class KesslerAIController:
             self.telemetry.target_asteroid_idx = None
             self.telemetry.target_pos = None
 
-        # 4. Global A* Path Planning toward Safe Zone
+        # 3. Global A* Path Planning
         now = world.time
         need_replan = (
             (now - self.last_astar_replan_time >= self.astar_replan_interval)
@@ -204,7 +226,11 @@ class KesslerAIController:
             or emergency_override
         )
         if need_replan:
-            goal_pos = (self.safe_zone.x, self.safe_zone.y)
+            if self.safe_zone is not None:
+                goal_pos = (self.safe_zone.x, self.safe_zone.y)
+            else:
+                goal_pos = self._find_clearest_sector(world)
+
             path = self.astar.plan_path(
                 start_pos=(world.pos[0], world.pos[1]),
                 goal_pos=goal_pos,
@@ -220,36 +246,33 @@ class KesslerAIController:
         active_waypoint = self.navigator.get_current_target((world.pos[0], world.pos[1]))
         self.telemetry.active_waypoint = active_waypoint
 
-        # 5. Local MPC Planning & Trajectory Evaluation
+        # 4. Local MPC Trajectory Optimization
         plan = self.planner.plan(world, raw_threats, target, risk, events)
         self.telemetry.mpc_cost = plan.cost
         self.telemetry.mpc_best_collides = plan.best_collides
         self.telemetry.mpc_trajectory = [(float(f[0]), float(f[1])) for f in plan.ship_frames]
 
-        # 6. Behavior State & Action Execution
+        # 5. Behavior Mode Arbitration: EVADE, SURVIVE, ATTACK, or REPOSITION
         boost_needed = False
 
+        # --- A. EVADE (Emergency Collision Override) ---
         if emergency_override:
-            # === COLLISION-SAFETY OVERRIDE ===
-            self.telemetry.state = AIBehaviorState.EMERGENCY_AVOIDANCE
+            self.telemetry.state = AIBehaviorState.EVADE
             most_critical = critical_threats[0]
 
-            # Emergency evasive maneuver: calculate normal evasion vector
+            # Compute tangential evasion vector perpendicular to oncoming threat
             rel_v = most_critical.relative_velocity
             rel_spd = max(1.0, float(np.linalg.norm(rel_v)))
-            # Tangent vector perpendicular to oncoming threat
             tan_u = np.array([-rel_v[1], rel_v[0]]) / rel_spd
 
-            # Determine side that aligns best with escaping
-            side_test = np.dot(tan_u, world.pos - most_critical.position)
-            if side_test < 0:
+            # Choose direction moving away from collision center
+            if np.dot(tan_u, world.pos - most_critical.position) < 0:
                 tan_u = -tan_u
 
             desired_evade_angle = math.degrees(math.atan2(tan_u[1], tan_u[0])) % 360.0
             turn_err = wrap_angle_deg(desired_evade_angle - world.heading)
             turn = float(np.clip(turn_err / p.frame_dt, -p.turn_max, p.turn_max))
 
-            # If facing close to evasive heading, thrust maximum; if head-on imminent, boost!
             if abs(turn_err) < 45.0:
                 thrust = p.thrust_max
             elif abs(turn_err) > 135.0:
@@ -257,58 +280,61 @@ class KesslerAIController:
             else:
                 thrust = p.thrust_max * 0.5
 
-            if most_critical.time_to_collision < 0.5:
+            if most_critical.time_to_collision < 0.45:
                 boost_needed = True
 
             fire = self.fire.decide(world, thrust, turn, plan, risk, self.planner, raw_threats, target, events)
             return float(thrust), float(turn), bool(fire), boost_needed
 
-        elif in_safe_zone:
-            # === DOCKING IN SAFE ZONE ===
-            self.telemetry.state = AIBehaviorState.DOCKING
-            # Decelerate / station-keep inside safe zone
-            dist_to_center = float(np.linalg.norm(world.pos - self.safe_zone.center))
-            if dist_to_center > self.safe_zone.radius * 0.4:
-                # Steer gently toward center
-                to_center = self.safe_zone.center - world.pos
-                desired_heading = math.degrees(math.atan2(to_center[1], to_center[0])) % 360.0
-                turn_err = wrap_angle_deg(desired_heading - world.heading)
-                turn = float(np.clip(turn_err / p.frame_dt, -p.turn_max * 0.5, p.turn_max * 0.5))
-                thrust = p.thrust_max * 0.25 if abs(turn_err) < 30.0 else 0.0
-            else:
-                # Brake to halt
-                turn = 0.0
-                thrust = p.thrust_min if world.speed > 10.0 else 0.0
+        # --- B. SURVIVE (Low Health or Critical Hazard Density) ---
+        is_low_health = world.health <= 40.0 or risk.level >= 2
+        threat_density_high = len(threat_list) >= 4 and threat_list[0].overall_threat_score > 0.40
 
-            fire = self.fire.decide(world, thrust, turn, plan, risk, self.planner, raw_threats, target, events)
-            return float(thrust), float(turn), bool(fire), False
-
-        else:
-            # === SAFE ZONE NAVIGATION WITH MPC ===
-            self.telemetry.state = AIBehaviorState.NAVIGATING_TO_SAFE_ZONE
-
-            if target is not None and target.score > 0.4 and not plan.best_collides:
-                # Engage target if favorable
-                self.telemetry.state = AIBehaviorState.ENGAGING_THREAT
-                thrust, turn = self.planner.resolve_action(world, plan.thrust_idx, plan.turn_mode, target)
-            else:
-                # Steer toward active A* waypoint
-                if active_waypoint is not None:
-                    to_wp = np.array(active_waypoint) - world.pos
-                    desired_heading = math.degrees(math.atan2(to_wp[1], to_wp[0])) % 360.0
-                    turn_err = wrap_angle_deg(desired_heading - world.heading)
+        if is_low_health or threat_density_high:
+            self.telemetry.state = AIBehaviorState.SURVIVE
+            # Prioritize maintaining safety clearance and moving to clear space
+            if threat_list:
+                nearest_threat = threat_list[0]
+                if nearest_threat.distance < 180.0:
+                    # Steer directly away from closest hazard
+                    away = world.pos - nearest_threat.position
+                    away_angle = math.degrees(math.atan2(away[1], away[0])) % 360.0
+                    turn_err = wrap_angle_deg(away_angle - world.heading)
                     turn = float(np.clip(turn_err / p.frame_dt, -p.turn_max, p.turn_max))
-
-                    # Combine waypoint heading with MPC safe thrust
-                    if not plan.best_collides and abs(turn_err) < 60.0:
-                        thrust = p.thrust_max
-                    else:
-                        thrust, mpc_turn = self.planner.resolve_action(world, plan.thrust_idx, plan.turn_mode, None)
-                        # Blend turn when hazard is near
-                        if plan.best_collides:
-                            turn = mpc_turn
+                    thrust = p.thrust_max if abs(turn_err) < 60.0 else 0.0
                 else:
                     thrust, turn = self.planner.resolve_action(world, plan.thrust_idx, plan.turn_mode, None)
+            else:
+                thrust, turn = self.planner.resolve_action(world, plan.thrust_idx, plan.turn_mode, None)
 
+            # In SURVIVE mode, only fire if a shot is safe and won't spawn hazardous children nearby
             fire = self.fire.decide(world, thrust, turn, plan, risk, self.planner, raw_threats, target, events)
             return float(thrust), float(turn), bool(fire), False
+
+        # --- C. ATTACK (Target Selected and Safe Conditions) ---
+        if target is not None and target.score > 0.25 and not plan.best_collides:
+            self.telemetry.state = AIBehaviorState.ATTACK
+            # Resolve aim and forward intercept via MPC
+            thrust, turn = self.planner.resolve_action(world, plan.thrust_idx, plan.turn_mode, target)
+            fire = self.fire.decide(world, thrust, turn, plan, risk, self.planner, raw_threats, target, events)
+            return float(thrust), float(turn), bool(fire), False
+
+        # --- D. REPOSITION (Relocating via A* Waypoints to Open Space) ---
+        self.telemetry.state = AIBehaviorState.REPOSITION
+        if active_waypoint is not None:
+            to_wp = np.array(active_waypoint) - world.pos
+            desired_heading = math.degrees(math.atan2(to_wp[1], to_wp[0])) % 360.0
+            turn_err = wrap_angle_deg(desired_heading - world.heading)
+            turn = float(np.clip(turn_err / p.frame_dt, -p.turn_max, p.turn_max))
+
+            if not plan.best_collides and abs(turn_err) < 60.0:
+                thrust = p.thrust_max
+            else:
+                thrust, mpc_turn = self.planner.resolve_action(world, plan.thrust_idx, plan.turn_mode, None)
+                if plan.best_collides:
+                    turn = mpc_turn
+        else:
+            thrust, turn = self.planner.resolve_action(world, plan.thrust_idx, plan.turn_mode, None)
+
+        fire = self.fire.decide(world, thrust, turn, plan, risk, self.planner, raw_threats, target, events)
+        return float(thrust), float(turn), bool(fire), False

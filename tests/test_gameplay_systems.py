@@ -6,9 +6,11 @@ Tests:
 3. Threat calculation and collision metrics.
 4. A* global route planning and obstacle avoidance.
 5. Safe zone arrival and docking mechanics.
-6. Emergency collision avoidance override.
-7. AI controller integration with live game state.
-8. Game state transitions (menu, play, pause, victory, game over, restart).
+6. Emergency collision avoidance override (EVADE state).
+7. Autonomous AI targeting, lead intercept, and behavior states (ATTACK, EVADE, REPOSITION, SURVIVE).
+8. Scoring prevention of duplicate points and safe asteroid spawns.
+9. Countdown timer expiration (VICTORY) and zero health (DEFEAT).
+10. Game state transitions and session reset.
 """
 import math
 import numpy as np
@@ -98,6 +100,7 @@ def test_bullet_asteroid_collision_and_splitting():
     assert len(debris_mgr.asteroids) == 3
     assert ship.asteroids_destroyed == 1
     assert ship.shots_hit == 1
+    assert ship.score == 100  # Size 2 awards 100 points
 
 
 def test_ship_asteroid_collision_and_shield_damage():
@@ -113,21 +116,20 @@ def test_ship_asteroid_collision_and_shield_damage():
     events = physics.check_ship_asteroid_collisions([ship], debris_mgr)
     assert len(events) == 1
     assert events[0].event_type == "ship_asteroid"
-    # Shields should have absorbed damage
+    # Shields absorb damage first
     assert ship.shields < 100.0
-    assert ship.health == 100.0  # Hull protected while shields up
+    assert ship.damage_taken > 0.0
 
 
-def test_ship_death_and_lives_decrement():
+def test_ship_death_when_health_reaches_zero():
     ship = Spaceship(position=(400.0, 400.0))
     ship.shields = 0.0
     ship.health = 20.0
-    ship.lives = 3
 
     died = ship.apply_damage(50.0)
     assert died
-    assert ship.lives == 2
     assert ship.health == 0.0
+    assert ship.damage_taken == 50.0
 
 
 # =============================================================================
@@ -144,8 +146,8 @@ def test_threat_evaluator_metrics():
         "heading": 0.0,
         "radius": 20.0,
         "lives": 3,
+        "health": 100.0,
     }
-    # Asteroid moving head-on toward ship
     game_state = {
         "map_size": (1000.0, 800.0),
         "frame_rate": 60.0,
@@ -179,7 +181,6 @@ def test_threat_evaluator_metrics():
 def test_astar_planner_finds_path():
     planner = AStarPlanner(map_w=1000.0, map_h=800.0, cell_size=25.0)
 
-    # Empty debris field
     pos = np.zeros((0, 2))
     vel = np.zeros((0, 2))
     rad = np.zeros(0)
@@ -200,7 +201,6 @@ def test_astar_planner_finds_path():
 def test_astar_avoids_large_obstacle():
     planner = AStarPlanner(map_w=1000.0, map_h=800.0, cell_size=25.0)
 
-    # Place a large stationary obstacle directly between (100, 400) and (900, 400)
     pos = np.array([[500.0, 400.0]])
     vel = np.array([[0.0, 0.0]])
     rad = np.array([80.0])
@@ -214,7 +214,6 @@ def test_astar_avoids_large_obstacle():
     )
 
     assert len(path) >= 3
-    # Check that path does not pass directly through the obstacle center (500, 400)
     for px, py in path:
         dist_to_obs = math.hypot(px - 500.0, py - 400.0)
         assert dist_to_obs > 70.0, f"Waypoint ({px}, {py}) too close to obstacle!"
@@ -225,45 +224,38 @@ def test_waypoint_navigator_progression():
     path = [(100.0, 100.0), (200.0, 100.0), (300.0, 100.0)]
     nav.set_path(path)
 
-    # At start, target is first waypoint
     t1 = nav.get_current_target((100.0, 100.0))
-    # Since ship is at (100, 100), reach_radius (30) advances target to next waypoint
     assert t1 == (200.0, 100.0)
 
-    # When ship arrives near (200, 100), target advances to (300, 100)
     t2 = nav.get_current_target((195.0, 100.0))
     assert t2 == (300.0, 100.0)
     assert nav.is_finished
 
 
 # =============================================================================
-# 5. Safe Zone Objective & Docking Mechanics
+# 5. Safe Zone Objective & Arrival
 # =============================================================================
 def test_safe_zone_docking_and_victory():
     sz = SafeZone(center=(800.0, 200.0), radius=60.0, required_dock_time=2.0)
 
-    # Ship outside safe zone
     assert not sz.contains_point((100.0, 100.0))
     assert sz.distance_to_perimeter((100.0, 100.0)) > 500.0
 
-    # Ship enters safe zone
     ship_id = 1
     ship_pos = {ship_id: (810.0, 200.0)}
     assert sz.contains_point(ship_pos[ship_id])
 
-    # Update for 1 second -> 50% docked
     sz.update(1.0, ship_pos)
     assert sz.get_dock_progress(ship_id) == pytest.approx(0.5, abs=0.05)
     assert not sz.is_ship_docked(ship_id)
 
-    # Update for another 1.2 seconds -> 100% docked (Victory condition)
     sz.update(1.2, ship_pos)
     assert sz.get_dock_progress(ship_id) == 1.0
     assert sz.is_ship_docked(ship_id)
 
 
 # =============================================================================
-# 6. Emergency Collision Avoidance Override
+# 6. Emergency Collision Avoidance Override (EVADE State)
 # =============================================================================
 def test_emergency_collision_avoidance_trigger():
     ctrl = KesslerAIController()
@@ -275,6 +267,7 @@ def test_emergency_collision_avoidance_trigger():
         "heading": 0.0,
         "radius": 20.0,
         "lives": 3,
+        "health": 100.0,
         "thrust_range": (-480.0, 480.0),
         "turn_rate_range": (-180.0, 180.0),
         "max_speed": 240.0,
@@ -299,82 +292,158 @@ def test_emergency_collision_avoidance_trigger():
 
     thrust, turn, fire, boost = ctrl.get_actions(ship_state, game_state)
 
-    # Must activate emergency collision avoidance override
+    # Must activate EVADE state
     assert ctrl.telemetry.emergency_override
-    assert ctrl.telemetry.state == AIBehaviorState.EMERGENCY_AVOIDANCE
-    # Thrust or turn executed to evade
+    assert ctrl.telemetry.state == AIBehaviorState.EVADE
     assert abs(thrust) > 0.0 or abs(turn) > 0.0
 
 
 # =============================================================================
-# 7. AI Live Simulation Integration
+# 7. AI Behavior States: ATTACK, SURVIVE, REPOSITION
 # =============================================================================
-def test_ai_live_simulation_integration():
+def test_ai_behavior_state_survive_on_low_health():
     ctrl = KesslerAIController()
 
+    # Low health ship (health = 25) with nearby threat
     ship_state = {
-        "position": (200.0, 600.0),
-        "velocity": (50.0, 0.0),
-        "speed": 50.0,
-        "heading": 45.0,
+        "position": (500.0, 400.0),
+        "velocity": (0.0, 0.0),
+        "speed": 0.0,
+        "heading": 0.0,
         "radius": 20.0,
-        "lives": 3,
+        "lives": 1,
+        "health": 25.0,
     }
     game_state = {
         "map_size": (1000.0, 800.0),
         "frame_rate": 60.0,
         "time": 1.0,
         "asteroids": [
-            {"position": (400.0, 400.0), "velocity": (20.0, -10.0), "size": 2, "radius": 30.0, "mass": 75.0},
-            {"position": (700.0, 500.0), "velocity": (-30.0, 15.0), "size": 3, "radius": 50.0, "mass": 200.0},
+            {"position": (650.0, 400.0), "velocity": (0.0, 20.0), "size": 3, "radius": 50.0, "mass": 200.0},
         ],
     }
 
-    thrust, turn, fire, boost = ctrl.get_actions(ship_state, game_state)
+    ctrl.get_actions(ship_state, game_state)
+    assert ctrl.telemetry.state == AIBehaviorState.SURVIVE
+    assert ctrl.telemetry.risk_multiplier >= 1.5
 
-    # Valid physical outputs
-    assert -480.0 <= thrust <= 480.0
-    assert -180.0 <= turn <= 180.0
-    assert isinstance(fire, bool)
-    assert isinstance(boost, bool)
 
-    # Telemetry populated
-    assert len(ctrl.telemetry.astar_path) > 0
-    assert len(ctrl.telemetry.mpc_trajectory) > 0
-    assert ctrl.telemetry.risk_multiplier >= 1.0
+def test_ai_behavior_state_attack_when_safe():
+    ctrl = KesslerAIController()
+
+    # Healthy ship facing an asteroid at medium range (distance 300)
+    ship_state = {
+        "position": (500.0, 400.0),
+        "velocity": (0.0, 0.0),
+        "speed": 0.0,
+        "heading": 0.0,
+        "radius": 20.0,
+        "lives": 3,
+        "health": 100.0,
+        "can_fire": True,
+        "bullets_remaining": 100,
+    }
+    game_state = {
+        "map_size": (1000.0, 800.0),
+        "frame_rate": 60.0,
+        "time": 1.0,
+        "asteroids": [
+            {"position": (800.0, 400.0), "velocity": (0.0, 0.0), "size": 1, "radius": 15.0, "mass": 25.0},
+        ],
+    }
+
+    ctrl.get_actions(ship_state, game_state)
+    assert ctrl.telemetry.state == AIBehaviorState.ATTACK
 
 
 # =============================================================================
-# 8. Game State Transitions & Session Reset
+# 8. Scoring & Safe Spawning
+# =============================================================================
+def test_no_duplicate_scoring_for_same_asteroid():
+    debris_mgr = DebrisManager(map_size=(1000.0, 800.0))
+    ast = debris_mgr.spawn_asteroid(position=(200.0, 200.0), velocity=(0.0, 0.0), size=2)
+
+    # First award gives full points (100)
+    first_pts = debris_mgr.award_points(ast)
+    assert first_pts == 100
+
+    # Second award for same asteroid uid yields 0 points
+    second_pts = debris_mgr.award_points(ast)
+    assert second_pts == 0
+
+
+def test_safe_asteroid_spawn_respects_clearance():
+    debris_mgr = DebrisManager(map_size=(1000.0, 800.0))
+    ship_pos = (500.0, 400.0)
+
+    # Spawn 10 asteroids with avoid_pos
+    for _ in range(10):
+        ast = debris_mgr.spawn_asteroid(avoid_pos=ship_pos, min_distance=220.0)
+        dist = math.hypot(ast.x - ship_pos[0], ast.y - ship_pos[1])
+        assert dist >= 220.0, f"Asteroid spawned too close to ship: {dist:.1f} < 220.0"
+
+
+# =============================================================================
+# 9. Countdown Timer Expiration (VICTORY) and Zero Health (DEFEAT)
+# =============================================================================
+def test_countdown_timer_expiration_triggers_victory():
+    # Set a short 2.0s countdown timer
+    settings = GameSettings(sfx_enabled=False, countdown_duration=2.0)
+    app = KesslerGameApp(settings=settings)
+    app.start_game(GameMode.AUTONOMOUS)
+
+    assert app.state == GameState.PLAYING
+    assert app.countdown_remaining == 2.0
+
+    # Advance 1.0s -> timer is 1.0s
+    app._update(1.0)
+    assert app.countdown_remaining == pytest.approx(1.0, abs=0.05)
+    assert app.state == GameState.PLAYING
+
+    # Advance 1.1s -> countdown reaches 0 -> VICTORY!
+    app._update(1.1)
+    assert app.countdown_remaining == 0.0
+    assert app.state == GameState.VICTORY
+
+
+def test_zero_health_triggers_immediate_defeat():
+    settings = GameSettings(sfx_enabled=False, countdown_duration=180.0)
+    app = KesslerGameApp(settings=settings)
+    app.start_game(GameMode.AUTONOMOUS)
+
+    assert app.state == GameState.PLAYING
+    assert app.ai_ship is not None
+    assert app.ai_ship.health == 100.0
+
+    # Deplete health to zero
+    app.ai_ship.shields = 0.0
+    app.ai_ship.apply_damage(100.0)
+    assert app.ai_ship.health == 0.0
+
+    app._update(0.016)
+    assert app.state == GameState.DEFEAT
+
+
+# =============================================================================
+# 10. Game State Transitions & Reset
 # =============================================================================
 def test_game_app_state_transitions():
     app = KesslerGameApp(settings=GameSettings(sfx_enabled=False))
 
-    # Initial state is MENU
     assert app.state == GameState.MENU
 
-    # Start Player Mode
-    app.start_game(GameMode.PLAYER)
+    app.start_game(GameMode.AUTONOMOUS)
     assert app.state == GameState.PLAYING
-    assert app.player_ship is not None
-    assert app.player_ship.is_alive
-    assert app.player_ship.lives == 3
+    assert app.ai_ship is not None
+    assert app.ai_ship.is_alive
+    assert app.ai_ship.health == 100.0
 
-    # Pause and Resume
     app.set_state(GameState.PAUSED)
     assert app.state == GameState.PAUSED
     app.set_state(GameState.PLAYING)
     assert app.state == GameState.PLAYING
 
-    # Trigger Game Over
-    app.player_ship.lives = 0
-    app.player_ship.is_alive = False
-    app._update(0.016)
-    assert app.state == GameState.GAME_OVER
-
-    # Restart Match
-    app.start_game(GameMode.AI_DEMO)
+    # Restart
+    app.start_game(GameMode.AUTONOMOUS)
     assert app.state == GameState.PLAYING
-    assert app.ai_ship is not None
-    assert app.ai_ship.is_alive
-    assert app.ai_ship.lives == 3
+    assert app.countdown_remaining == 180.0

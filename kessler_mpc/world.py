@@ -39,6 +39,8 @@ class World:
     bul_vel: np.ndarray = field(default_factory=lambda: np.zeros((0, 2)))
     bul_mass: np.ndarray = field(default_factory=lambda: np.zeros(0))
     random_splits: bool = False
+    health: float = 100.0
+    shields: float = 100.0
 
     @property
     def n_ast(self):
@@ -95,13 +97,16 @@ def read_world(ship_state, game_state) -> World:
         params=p,
         pos=np.array(ship_state["position"], float), vel=np.array(ship_state["velocity"], float),
         speed=float(ship_state["speed"]), heading=float(ship_state["heading"]),
-        lives=int(ship_state["lives_remaining"]), respawning=bool(ship_state["is_respawning"]),
+        lives=int(_get(ship_state, "lives_remaining", _get(ship_state, "lives", 3))),
+        respawning=bool(ship_state["is_respawning"]),
         respawn_left=resp_left, can_fire=bool(_get(ship_state, "can_fire", True)),
         bullets_remaining=int(_get(ship_state, "bullets_remaining", -1)),
         time=float(_get(game_state, "time", 0.0)),
         ast_pos=ast_pos, ast_vel=ast_vel, ast_size=ast_size.astype(int), ast_rad=ast_rad, ast_mass=ast_mass,
         other_pos=o_pos, other_vel=o_vel, other_rad=o_rad, bul_pos=b_pos, bul_vel=b_vel, bul_mass=b_mass,
         random_splits=bool(_get(game_state, "random_asteroid_splits", False)),
+        health=float(_get(ship_state, "health", 100.0)),
+        shields=float(_get(ship_state, "shields", 100.0)),
     )
 
 

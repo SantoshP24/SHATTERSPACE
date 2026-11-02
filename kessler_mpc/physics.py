@@ -51,8 +51,10 @@ class PhysicsEngine:
                         # Hit detected!
                         bullet_consumed = True
                         ship.shots_hit += 1
-                        ship.score += a.score_value
-                        ship.asteroids_destroyed += 1
+                        pts = debris_mgr.award_points(a)
+                        ship.score += pts
+                        if pts > 0:
+                            ship.asteroids_destroyed += 1
 
                         events.append(
                             CollisionEvent(

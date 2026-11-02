@@ -124,6 +124,7 @@ class Spaceship:
         # Score & Stats
         self.score = 0
         self.asteroids_destroyed = 0
+        self.damage_taken = 0.0
         self.deaths = 0
 
         # Visual styling
@@ -135,6 +136,14 @@ class Spaceship:
             self.hull_color = (40, 160, 255)      # Cyan / Cobalt Blue
             self.accent_color = (180, 230, 255)
             self.shield_color = (80, 220, 255)
+
+    @property
+    def kills(self) -> int:
+        return self.asteroids_destroyed
+
+    @property
+    def accuracy(self) -> float:
+        return (self.shots_hit / max(1, self.shots_fired))
 
     @property
     def position(self) -> np.ndarray:
@@ -166,6 +175,7 @@ class Spaceship:
             return False
 
         self.time_since_last_hit = 0.0
+        self.damage_taken += float(amount)
 
         if self.shields > 0:
             absorbed = min(self.shields, amount)

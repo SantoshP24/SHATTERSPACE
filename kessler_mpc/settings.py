@@ -73,6 +73,7 @@ class GameSettings:
 
     # Gameplay
     difficulty: DifficultyLevel = DifficultyLevel.STANDARD
+    countdown_duration: float = 180.0
 
     # Debug Overlay Toggles
     show_debug_overlay: bool = True
