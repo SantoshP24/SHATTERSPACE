@@ -11,7 +11,6 @@ What makes it a bit different is that the ship can fly itself. Switch on the aut
 
 **[Play SHATTERSPACE in your browser](https://shatterspace.vercel.app/)**
 
-No install needed. It runs on desktop and mobile.
 
 ## What you get
 
