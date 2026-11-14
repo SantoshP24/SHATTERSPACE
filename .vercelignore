@@ -1,0 +1,12 @@
+# Prevent Vercel from treating Python files as serverless backend functions
+main.py
+kessler_mpc/
+tests/
+*.py
+*.bat
+*.ps1
+pygbag.ini
+requirements.txt
+settings.json
+.venv/
+.venv_build/
