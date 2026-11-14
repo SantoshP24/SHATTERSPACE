@@ -5,6 +5,7 @@ with escalating difficulty, accurate collision mechanics, and VICTORY / DEFEAT s
 """
 from __future__ import annotations
 
+import asyncio
 import math
 import random
 import sys
@@ -30,6 +31,7 @@ from .settings import (
     GameSettings,
 )
 from .spaceship import Spaceship
+from .touch import TouchController
 from .ui import SettingsMenuUI, UIButton, UIManager
 from .visuals import ParticleSystem, ScreenShake, Starfield
 
@@ -58,11 +60,22 @@ class KesslerGameApp:
         pygame.init()
         self.settings = settings or GameSettings.load_from_file()
 
-        # Window setup
+        # Logical canvas setup (Physics, AI, and geometry strictly operate at 1000x800)
         self.width = self.settings.screen_width
         self.height = self.settings.screen_height
-        self.flags = pygame.FULLSCREEN if self.settings.fullscreen else 0
-        self.screen = pygame.display.set_mode((self.width, self.height), self.flags)
+        self.virtual_surface = pygame.Surface((self.width, self.height))
+
+        # Physical window & responsive viewport scaling
+        self.window_width = self.width
+        self.window_height = self.height
+        self.viewport_scale: float = 1.0
+        self.viewport_offset_x: int = 0
+        self.viewport_offset_y: int = 0
+        self.scaled_w: int = self.width
+        self.scaled_h: int = self.height
+
+        self.flags = pygame.FULLSCREEN if self.settings.fullscreen else pygame.RESIZABLE
+        self.screen = pygame.display.set_mode((self.window_width, self.window_height), self.flags)
         pygame.display.set_caption(f"{GAME_TITLE} - {GAME_SUBTITLE}")
 
         self.clock = pygame.time.Clock()
@@ -77,6 +90,7 @@ class KesslerGameApp:
         self.shake = ScreenShake()
         self.ui = UIManager(screen_width=self.width, screen_height=self.height)
         self.physics = PhysicsEngine(map_size=(self.width, self.height))
+        self.touch = TouchController(on_pause_callback=self._on_touch_pause)
 
         # Settings Menu Interface
         self.settings_menu = SettingsMenuUI(
@@ -290,31 +304,93 @@ class KesslerGameApp:
     def quit(self) -> None:
         self.is_running = False
 
+    def _update_viewport(self, new_w: int, new_h: int) -> None:
+        """Recalculate letterbox scaling and centering offsets for arbitrary window dimensions."""
+        self.window_width = max(320, int(new_w))
+        self.window_height = max(240, int(new_h))
+
+        scale_x = self.window_width / self.width
+        scale_y = self.window_height / self.height
+        self.viewport_scale = min(scale_x, scale_y)
+
+        self.scaled_w = int(self.width * self.viewport_scale)
+        self.scaled_h = int(self.height * self.viewport_scale)
+
+        self.viewport_offset_x = (self.window_width - self.scaled_w) // 2
+        self.viewport_offset_y = (self.window_height - self.scaled_h) // 2
+
+    def window_to_logical(self, win_x: float, win_y: float) -> Tuple[int, int]:
+        """Convert physical window pixel coordinates into logical game space (1000x800)."""
+        if self.viewport_scale <= 0.0:
+            return int(win_x), int(win_y)
+        lx = (win_x - self.viewport_offset_x) / self.viewport_scale
+        ly = (win_y - self.viewport_offset_y) / self.viewport_scale
+        return int(max(0, min(self.width - 1, lx))), int(max(0, min(self.height - 1, ly)))
+
+    def _on_touch_pause(self) -> None:
+        """Toggle pause state from on-screen virtual touch button."""
+        if self.state == GameState.PLAYING:
+            self.set_state(GameState.PAUSED)
+        elif self.state == GameState.PAUSED:
+            self.set_state(GameState.PLAYING)
+
     # =========================================================================
-    # MAIN LOOP
+    # MAIN LOOP (SYNCHRONOUS & ASYNCHRONOUS WEBASSEMBLY SUPPORT)
     # =========================================================================
-    def run(self) -> None:
-        """Main game loop running at stable 60 FPS."""
-        while self.is_running:
+    def step(self, dt: Optional[float] = None) -> bool:
+        """Execute a single frame of events, physics/AI update, and rendering.
+
+        Returns:
+            bool: True if the application is still running, False if terminated.
+        """
+        if not self.is_running:
+            return False
+
+        if dt is None:
             dt = min(self.clock.tick(self.settings.target_fps) / 1000.0, 0.05)
-            self._handle_events(dt)
-            self._update(dt)
-            self._render()
+
+        self._handle_events(dt)
+        self._update(dt)
+        self._render()
+        return self.is_running
+
+    def run(self) -> None:
+        """Synchronous desktop game loop running at stable 60 FPS."""
+        while self.is_running:
+            self.step()
 
         pygame.quit()
         sys.exit(0)
+
+    async def run_async(self) -> None:
+        """Asynchronous game loop for Pygbag / WebAssembly browser deployment.
+
+        Yields control to the browser event loop every frame via asyncio.sleep(0)
+        to prevent blocking the single-threaded web environment.
+        """
+        while self.is_running:
+            self.step()
+            await asyncio.sleep(0)
+
+        pygame.quit()
 
     # =========================================================================
     # EVENT HANDLING
     # =========================================================================
     def _handle_events(self, dt: float) -> None:
-        mouse_pos = pygame.mouse.get_pos()
+        raw_mouse = pygame.mouse.get_pos()
+        mouse_pos = self.window_to_logical(*raw_mouse)
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 self.quit()
 
+            elif event.type == pygame.VIDEORESIZE:
+                self._update_viewport(event.w, event.h)
+                self.screen = pygame.display.set_mode((self.window_width, self.window_height), pygame.RESIZABLE)
+
             elif event.type == pygame.KEYDOWN:
+                self.audio.unlock_audio()
                 if event.key in (pygame.K_ESCAPE, pygame.K_p):
                     if self.state == GameState.PLAYING:
                         self.set_state(GameState.PAUSED)
@@ -326,11 +402,44 @@ class KesslerGameApp:
                 elif event.key in (pygame.K_F1, pygame.K_TAB):
                     self._toggle_overlay()
 
-            if self.state == GameState.SETTINGS:
-                self.settings_menu.handle_event(event, mouse_pos)
+            # Handle Browser Touch Events (Finger Down, Finger Motion, Finger Up)
+            elif event.type in (pygame.FINGERDOWN, pygame.FINGERMOTION, pygame.FINGERUP):
+                self.audio.unlock_audio()
+                win_x = event.x * self.window_width
+                win_y = event.y * self.window_height
+                touch_pos = self.window_to_logical(win_x, win_y)
+
+                if self.state == GameState.PLAYING:
+                    self.touch.handle_event(event, touch_pos)
+                elif event.type == pygame.FINGERDOWN:
+                    # Allow touch taps in modal screens and settings
+                    if self.state == GameState.SETTINGS:
+                        sim_event = pygame.event.Event(pygame.MOUSEBUTTONDOWN, {"button": 1, "pos": touch_pos})
+                        self.settings_menu.handle_event(sim_event, touch_pos)
+                    elif self.state == GameState.MENU:
+                        for btn in self.main_menu_buttons:
+                            btn.handle_click(touch_pos)
+                    elif self.state == GameState.PAUSED:
+                        for btn in self.pause_buttons:
+                            btn.handle_click(touch_pos)
+                    elif self.state in (GameState.DEFEAT, GameState.GAME_OVER):
+                        for btn in self.defeat_buttons:
+                            btn.handle_click(touch_pos)
+                    elif self.state == GameState.VICTORY:
+                        for btn in self.victory_buttons:
+                            btn.handle_click(touch_pos)
+                    elif self.state == GameState.CONTROLS:
+                        self.back_button.handle_click(touch_pos)
 
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                if self.state == GameState.MENU:
+                self.audio.unlock_audio()
+                # In gameplay, allow clicking virtual on-screen controls
+                if self.state == GameState.PLAYING:
+                    self.touch.handle_event(event, mouse_pos)
+
+                if self.state == GameState.SETTINGS:
+                    self.settings_menu.handle_event(event, mouse_pos)
+                elif self.state == GameState.MENU:
                     for btn in self.main_menu_buttons:
                         btn.handle_click(mouse_pos)
                 elif self.state == GameState.PAUSED:
@@ -345,7 +454,13 @@ class KesslerGameApp:
                 elif self.state == GameState.CONTROLS:
                     self.back_button.handle_click(mouse_pos)
 
-        # Update button hover states
+            elif event.type in (pygame.MOUSEMOTION, pygame.MOUSEBUTTONUP):
+                if self.state == GameState.PLAYING:
+                    self.touch.handle_event(event, mouse_pos)
+                if self.state == GameState.SETTINGS:
+                    self.settings_menu.handle_event(event, mouse_pos)
+
+        # Update button hover states using logical coordinate space
         if self.state == GameState.MENU:
             for btn in self.main_menu_buttons:
                 btn.check_hover(mouse_pos)
@@ -449,10 +564,24 @@ class KesslerGameApp:
         # 5. Optional Player Ship Controls (when in Player or Co-op mode)
         if self.player_ship and self.player_ship.is_alive:
             keys = pygame.key.get_pressed()
-            mouse_pos = pygame.mouse.get_pos()
+            raw_mouse = pygame.mouse.get_pos()
+            mouse_pos = self.window_to_logical(*raw_mouse)
             mouse_btns = pygame.mouse.get_pressed()
 
             p_thrust, p_turn, p_fire, p_boost = self.player_ship.process_input(keys, mouse_pos, mouse_btns, dt)
+
+            # Blend virtual touch inputs if on touchscreen
+            if self.touch.is_active:
+                t_thrust, t_turn, t_fire, t_boost = self.touch.get_inputs()
+                if abs(t_thrust) > 0.01:
+                    p_thrust = self.player_ship.params.thrust_max if t_thrust > 0.0 else self.player_ship.params.thrust_min
+                if abs(t_turn) > 0.01:
+                    p_turn = t_turn * self.player_ship.params.turn_max
+                if t_fire:
+                    p_fire = True
+                if t_boost:
+                    p_boost = True
+
             is_thrusting, nozzle = self.player_ship.update_physics(p_thrust, p_turn, dt, boost_active=p_boost)
 
             if is_thrusting:
@@ -513,7 +642,7 @@ class KesslerGameApp:
         cam_x = self.shake.offset_x if self.settings.screen_shake_enabled else 0.0
         cam_y = self.shake.offset_y if self.settings.screen_shake_enabled else 0.0
 
-        render_surf = self.screen
+        render_surf = self.virtual_surface
 
         # 1. Background Starfield & Nebulae
         self.starfield.draw(render_surf, cam_x=cam_x, cam_y=cam_y)
@@ -551,7 +680,11 @@ class KesslerGameApp:
                     red_count=len(self.debris.red_asteroids),
                 )
 
-        # 7. Modal Screens
+        # 7. Virtual Touch Controls (shown during PLAYING state)
+        if self.state == GameState.PLAYING:
+            self.touch.draw(render_surf, show_flight_controls=(self.mode == GameMode.PLAYER))
+
+        # 8. Modal Screens
         if self.state == GameState.MENU:
             self.ui.draw_main_menu(render_surf, self.main_menu_buttons, self.settings.difficulty)
 
@@ -597,5 +730,16 @@ class KesslerGameApp:
 
         elif self.state == GameState.SETTINGS:
             self.settings_menu.draw(render_surf)
+
+        # 9. Letterboxed Responsive Viewport Blit
+        if self.window_width == self.width and self.window_height == self.height:
+            # Direct blit when window matches internal logical canvas (1000x800)
+            self.screen.blit(self.virtual_surface, (0, 0))
+        else:
+            # Fill borders with deep-space black and smoothscale canvas centered
+            self.screen.fill((4, 8, 14))
+            if self.scaled_w > 0 and self.scaled_h > 0:
+                scaled_view = pygame.transform.smoothscale(self.virtual_surface, (self.scaled_w, self.scaled_h))
+                self.screen.blit(scaled_view, (self.viewport_offset_x, self.viewport_offset_y))
 
         pygame.display.flip()

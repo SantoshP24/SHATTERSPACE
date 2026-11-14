@@ -765,3 +765,65 @@ def test_shatterspace_game_branding_and_menu_labels():
     assert app.settings.difficulty == DifficultyLevel.CADET
     assert app.main_menu_buttons[3].text == "DIFFICULTY: CADET"
 
+
+def test_game_app_step_execution():
+    """Verify app.step() executes a single frame, updates physics/AI, and respects termination."""
+    settings = GameSettings(screen_width=1000, screen_height=800, countdown_duration=180.0)
+    app = KesslerGameApp(settings=settings)
+    app.start_game(GameMode.AUTONOMOUS)
+
+    assert app.is_running is True
+    # Step single frame
+    running = app.step(0.016)
+    assert running is True
+    assert app.ai_ship is not None
+    assert app.countdown_remaining < 180.0
+
+    # Test quit termination
+    app.quit()
+    assert app.is_running is False
+    assert app.step(0.016) is False
+
+
+def test_game_app_run_async_loop():
+    """Verify asynchronous game loop execution yields control every frame and runs AI without freezing."""
+    settings = GameSettings(screen_width=1000, screen_height=800, countdown_duration=180.0)
+    app = KesslerGameApp(settings=settings)
+    app.start_game(GameMode.AUTONOMOUS)
+
+    coro = app.run_async()
+    frame_yields = 0
+
+    # Advance 15 frames by driving the async coroutine (verifies each frame yields via asyncio.sleep(0))
+    try:
+        for _ in range(15):
+            coro.send(None)
+            frame_yields += 1
+            assert app.is_running is True
+    except StopIteration:
+        pass
+
+    assert frame_yields == 15
+    assert app.is_running is True
+    # Verify AI controller updated telemetry during async loop
+    assert app.ai_controller.telemetry is not None
+    assert app.ai_controller.telemetry.state is not None
+
+    # Clean termination
+    app.quit()
+    try:
+        coro.send(None)
+    except StopIteration:
+        pass
+    coro.close()
+
+
+def test_main_async_entry_point_coroutine():
+    """Verify main.main() is an async coroutine function required for Pygbag WebAssembly deployment."""
+    import inspect
+    import main
+
+    assert inspect.iscoroutinefunction(main.main), "main.main must be an async coroutine function for Pygbag"
+    assert hasattr(main, "main_sync"), "main.py must provide main_sync for desktop compatibility"
+
+
