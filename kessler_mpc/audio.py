@@ -23,19 +23,40 @@ class SoundManager:
         self.sfx_volume = 0.8
         self.sounds: Dict[str, pygame.mixer.Sound] = {}
         self.initialized = False
+        self.audio_available = False
 
         if not self.enabled:
             return
 
+        self._try_init_mixer()
+
+    def _try_init_mixer(self) -> bool:
+        """Attempt to initialize the Pygame mixer and generate procedural sound effects."""
         try:
             if not pygame.mixer.get_init():
                 # Initialize mixer with 16-bit signed stereo
                 pygame.mixer.init(frequency=self.sample_rate, size=-16, channels=2, buffer=1024)
             self.initialized = True
+            self.audio_available = True
             self._generate_all_sfx()
+            return True
         except Exception:
-            # Audio device might be busy, absent, or sandbox-restricted
+            # Audio device might be busy, absent, or browser AudioContext suspended
             self.initialized = False
+            self.audio_available = False
+            return False
+
+    def unlock_audio(self) -> bool:
+        """Browser WebAudio gesture activation hook.
+
+        Call this upon the first user interaction (touch, click, or keypress)
+        to safely resume/initialize AudioContext in strict browser autoplay environments.
+        """
+        if self.initialized:
+            return True
+        if not self.enabled:
+            return False
+        return self._try_init_mixer()
 
     def _make_sound(self, mono_samples: np.ndarray) -> Optional[pygame.mixer.Sound]:
         """Convert float numpy array (-1.0 to 1.0) into a stereo Pygame Sound."""
