@@ -198,15 +198,41 @@ class MPCPlanner:
             if has_t:
                 aim_err[:, s] = np.abs(wrap_angle_deg(brg - head)) / 180.0
 
-        # chord-interpolated engine-frame positions (unwrapped -> wrapped)
+        # chord-interpolated engine-frame positions (unwrapped -> wrapped or bounded)
         a, b = P_unw[:, :-1, None, :], P_unw[:, 1:, None, :]
         m = (np.arange(1, f + 1) / f)[None, None, :, None]
-        frames = np.mod((a + (b - a) * m).reshape(N, F, 2), [p.map_w, p.map_h])
+        unwrapped_frames = (a + (b - a) * m).reshape(N, F, 2)
+        wrap_bounds = c.get("wrap_boundaries", True)
 
         times = np.arange(1, F + 1) * dt
         vuln = (times >= w.respawn_left - 1e-9) if w.respawning else np.ones(F, bool)
         mult = risk.multiplier
         cost = np.zeros(N)
+
+        if wrap_bounds:
+            frames = np.mod(unwrapped_frames, [p.map_w, p.map_h])
+            wall_col = np.zeros(N, bool)
+        else:
+            frames = unwrapped_frames
+            # Hard wall collision check against arena boundaries
+            pad = p.radius + 2.0
+            wall_hit = (
+                (frames[:, :, 0] < pad) |
+                (frames[:, :, 0] > p.map_w - pad) |
+                (frames[:, :, 1] < pad) |
+                (frames[:, :, 1] > p.map_h - pad)
+            )
+            wall_col = wall_hit.any(axis=1)
+
+            # Soft boundary proximity penalty guiding ship away from walls & corners
+            b_margin = float(c.get("boundary_margin", 80.0))
+            dist_left = np.maximum(0.0, (b_margin - frames[:, :, 0]) / b_margin)
+            dist_right = np.maximum(0.0, (frames[:, :, 0] - (p.map_w - b_margin)) / b_margin)
+            dist_top = np.maximum(0.0, (b_margin - frames[:, :, 1]) / b_margin)
+            dist_bottom = np.maximum(0.0, (frames[:, :, 1] - (p.map_h - b_margin)) / b_margin)
+            b_pen = dist_left + dist_right + dist_top + dist_bottom
+            cost += 40.0 * mult * (b_pen ** 2).mean(axis=1)
+            cost += c["cost_collision"] * mult * wall_col.astype(float)
         any_col = np.zeros((N, M), bool)
         if M:
             d = np.linalg.norm(frames[:, :, None, :] - tracks[None], axis=-1)           # (N,F,M)
@@ -230,7 +256,7 @@ class MPCPlanner:
             cost += c["cost_aim"] * ((aim_err ** 2) * g).sum(axis=1) / g.sum()
         if self.prev_seq is not None and H > 1:
             cost += c["cost_switch"] * (seqs[:, 0, :] != self.prev_seq[1][None, :]).any(axis=1)
-        return dict(cost=cost, collides=any_col.any(axis=1), frames=frames, ast_idx=ast_idx)
+        return dict(cost=cost, collides=(any_col.any(axis=1) | wall_col), frames=frames, ast_idx=ast_idx)
 
     @staticmethod
     def best_of(ev):

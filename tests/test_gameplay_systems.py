@@ -447,3 +447,321 @@ def test_game_app_state_transitions():
     app.start_game(GameMode.AUTONOMOUS)
     assert app.state == GameState.PLAYING
     assert app.countdown_remaining == 180.0
+
+
+# =============================================================================
+# 11. Boundary Constraints & Screen-Wrapping Removal
+# =============================================================================
+def test_spaceship_does_not_wrap_around_edges():
+    """Verify ship cannot escape arena or wrap across borders."""
+    ship = Spaceship(position=(990.0, 400.0), heading=0.0, map_size=(1000.0, 800.0))
+    ship.speed = 200.0
+
+    # Advance forward toward right edge (x=1000)
+    for _ in range(15):
+        ship.update_physics(thrust_input=480.0, turn_input=0.0, dt=0.05)
+
+    # Position must be clamped at map_w - radius (1000 - 20 = 980), NEVER wrapping to 0
+    assert ship.x <= 980.0
+    assert ship.x >= 970.0
+    assert ship.speed == 0.0  # Speed cancelled against wall
+
+    # Test top border (heading 270 deg = straight up toward y=0)
+    ship.y = 15.0
+    ship.heading = 270.0
+    ship.speed = 200.0
+    for _ in range(10):
+        ship.update_physics(thrust_input=480.0, turn_input=0.0, dt=0.05)
+
+    # Must be clamped at radius (20.0), never wrapping to 800
+    assert ship.y >= 20.0
+    assert ship.y <= 25.0
+
+
+def test_asteroid_wall_bounce_no_wrapping():
+    """Verify asteroids bounce elastically off perimeter and never wrap across edges."""
+    mgr = DebrisManager(map_size=(1000.0, 800.0), wall_bounce=True)
+    # Spawn asteroid near right boundary traveling right (+vx)
+    ast = mgr.spawn_asteroid(position=(960.0, 400.0), velocity=(120.0, 0.0), size=1)
+    orig_vx = ast.vx
+    assert orig_vx > 0
+
+    # Update through wall impact
+    for _ in range(10):
+        ast.update(0.05)
+
+    # Asteroid must have reversed its vx and stayed within [0, 1000]
+    assert ast.vx < 0
+    assert ast.x <= (1000.0 - ast.radius)
+    assert ast.x > 800.0  # Did not wrap to near 0
+
+
+def test_bullet_despawns_at_boundaries():
+    """Verify projectiles leaving playable arena are removed without wrapping."""
+    ship = Spaceship(position=(990.0, 400.0), heading=0.0, map_size=(1000.0, 800.0))
+    bullet = ship.fire()
+    assert bullet is not None
+    assert len(ship.bullets) == 1
+
+    # Update physics with bullet passing x=1000
+    ship.update_physics(thrust_input=0.0, turn_input=0.0, dt=0.1)
+
+    # Bullet exceeded map_w -> despawned
+    assert len(ship.bullets) == 0
+
+
+# =============================================================================
+# 12. Boundary-Aware AI Navigation & Corner Escape
+# =============================================================================
+def test_ai_corner_escape_maneuver():
+    """Verify AI detects entrapment in corner and actively navigates toward center."""
+    controller = KesslerAIController(map_size=(1000.0, 800.0))
+    ship_dict = {
+        "position": (50.0, 50.0),  # Deep top-left corner
+        "velocity": (-10.0, -10.0),
+        "speed": 14.0,
+        "heading": 225.0,  # Facing directly into corner walls
+        "radius": 20.0,
+        "health": 100.0,
+        "shields": 100.0,
+        "lives": 3,
+        "can_fire": True,
+        "thrust_range": (-480.0, 480.0),
+        "turn_rate_range": (-180.0, 180.0),
+        "max_speed": 240.0,
+        "drag": 80.0,
+    }
+    game_dict = {
+        "map_size": (1000.0, 800.0),
+        "frame_rate": 60.0,
+        "time": 1.0,
+        "asteroids": [],
+    }
+
+    thrust, turn, fire, boost = controller.get_actions(ship_dict, game_dict)
+
+    # AI must turn toward arena center (45 deg is center from (50, 50))
+    assert controller.telemetry.state in (AIBehaviorState.REPOSITION, AIBehaviorState.SURVIVE)
+    # The turn must steer toward center
+    assert turn != 0.0
+
+
+def test_ai_wall_avoidance_trajectory():
+    """Verify MPC planner rejects or penalizes candidate trajectories exiting arena."""
+    from kessler_mpc.planner import MPCPlanner
+    from kessler_mpc.config import make_config
+    from kessler_mpc.world import World
+    from kessler_mpc.dynamics import ShipParams
+    from kessler_mpc.threat import assess
+    from kessler_mpc.risk import AdaptiveRisk
+
+    cfg = make_config(wrap_boundaries=False)
+    planner = MPCPlanner(cfg)
+
+    params = ShipParams(
+        thrust_min=-480.0, thrust_max=480.0, turn_max=180.0,
+        max_speed=240.0, drag=80.0, radius=20.0,
+        map_w=1000.0, map_h=800.0, frame_dt=1.0/60.0
+    )
+    # Ship at right wall edge facing wall
+    world = World(
+        params=params, pos=np.array([970.0, 400.0]), vel=np.array([100.0, 0.0]),
+        speed=100.0, heading=0.0, lives=3, respawning=False, respawn_left=0.0,
+        can_fire=True, bullets_remaining=250, time=0.0,
+        ast_pos=np.zeros((0, 2)), ast_vel=np.zeros((0, 2)), ast_size=np.zeros(0),
+        ast_rad=np.zeros(0), ast_mass=np.zeros(0), other_pos=np.zeros((0, 2)),
+        other_vel=np.zeros((0, 2)), other_rad=np.zeros(0), bul_pos=np.zeros((0, 2)),
+        bul_vel=np.zeros((0, 2)), bul_mass=np.zeros(0), random_splits=False,
+        health=100.0, shields=100.0,
+    )
+    th = assess(world, cfg)
+    risk = AdaptiveRisk(cfg).update(world.lives, world.health)
+    seqs = np.zeros((1, 15, 2), dtype=np.int8)
+    seqs[0, :, 0] = 2  # Full forward thrust toward wall
+
+    ev = planner.evaluate(world, th, None, risk, seqs)
+    # Forward candidate leaves arena bounds -> collides=True
+    assert ev["collides"][0]
+
+
+# =============================================================================
+# 13. Settings Persistence & Game Parameter Customization
+# =============================================================================
+def test_settings_save_and_load_persistence(tmp_path):
+    """Verify settings can be modified, saved to JSON, and reloaded accurately."""
+    test_file = str(tmp_path / "custom_settings.json")
+    s = GameSettings()
+    s.ship_max_speed = 360.0
+    s.ship_max_health = 250.0
+    s.ship_starting_lives = 5
+    s.initial_asteroids = 12
+    s.asteroid_split_enabled = False
+    s.countdown_duration = 240.0
+
+    assert s.save_to_file(test_file)
+
+    loaded = GameSettings.load_from_file(test_file)
+    assert loaded.ship_max_speed == 360.0
+    assert loaded.ship_max_health == 250.0
+    assert loaded.ship_starting_lives == 5
+    assert loaded.initial_asteroids == 12
+    assert loaded.asteroid_split_enabled is False
+    assert loaded.countdown_duration == 240.0
+
+
+def test_settings_validation_and_clamping():
+    """Verify safe limits are enforced on invalid or extreme numbers."""
+    s = GameSettings()
+    s.ship_max_speed = -50.0
+    s.ship_max_health = 99999.0
+    s.ship_starting_lives = 0
+    s.countdown_duration = -10.0
+
+    s.validate_and_clamp()
+    assert s.ship_max_speed == 80.0
+    assert s.ship_max_health == 500.0
+    assert s.ship_starting_lives == 1
+    assert s.countdown_duration == 10.0
+
+
+def test_settings_affect_spaceship_gameplay():
+    """Verify custom settings affect actual spaceship creation and physics."""
+    custom = GameSettings(
+        ship_max_speed=320.0,
+        ship_thrust_max=650.0,
+        ship_turn_max=240.0,
+        ship_max_health=175.0,
+        ship_starting_lives=4,
+        bullet_speed=950.0,
+        bullet_damage=80.0,
+    )
+    ship = Spaceship(settings=custom)
+
+    assert ship.params.max_speed == 320.0
+    assert ship.params.thrust_max == 650.0
+    assert ship.params.turn_max == 240.0
+    assert ship.max_health == 175.0
+    assert ship.health == 175.0
+    assert ship.lives == 4
+    assert ship.bullet_speed == 950.0
+    assert ship.bullet_damage == 80.0
+
+
+def test_settings_split_disabled():
+    """Verify disabling asteroid splitting prevents fragmentation on destruction."""
+    mgr = DebrisManager(map_size=(1000.0, 800.0), split_enabled=False)
+    ast = mgr.spawn_asteroid(position=(500.0, 400.0), velocity=(0.0, 0.0), size=3)
+    assert len(mgr.asteroids) == 1
+
+    children = mgr.split_asteroid(ast)
+    assert len(children) == 0
+    assert len(mgr.asteroids) == 0  # Destroyed without splitting
+
+
+def test_settings_menu_ui_interactions():
+    """Verify SettingsMenuUI correctly synchronizes and applies changes."""
+    settings = GameSettings()
+    from kessler_mpc.ui import SettingsMenuUI
+
+    ui = SettingsMenuUI(settings)
+    assert ui.current_tab == "SPACESHIP"
+
+    # Switch tab to ASTEROIDS
+    ui.set_tab("ASTEROIDS")
+    assert ui.current_tab == "ASTEROIDS"
+
+    # Modify slider value and apply
+    ui.asteroid_sliders["initial_asteroids"].set_value(11.0)
+    ui.apply_to_settings()
+
+    assert settings.initial_asteroids == 11
+    assert "CONFIG SAVED" in ui.status_msg
+
+
+def test_difficulty_presets_and_progression():
+    """Verify all 5 difficulty presets (CADET, PILOT, VETERAN, ELITE, NIGHTMARE) configure escalating challenge."""
+    from kessler_mpc.settings import (
+        DifficultyLevel,
+        DIFFICULTY_DESCRIPTIONS,
+        DIFFICULTY_PRESETS,
+    )
+
+    levels = list(DifficultyLevel)
+    assert [d.name for d in levels] == ["CADET", "PILOT", "VETERAN", "ELITE", "NIGHTMARE"]
+    assert [d.value for d in levels] == ["Cadet", "Pilot", "Veteran", "Elite", "Nightmare"]
+
+    # Verify descriptions exist
+    for lvl in levels:
+        assert lvl in DIFFICULTY_DESCRIPTIONS
+        assert len(DIFFICULTY_DESCRIPTIONS[lvl]) > 0
+
+    # Verify escalating difficulty parameters
+    settings = GameSettings()
+    prev_speed = 0.0
+    prev_asteroids = 0
+
+    for lvl in levels:
+        settings.apply_difficulty_preset(lvl)
+        assert settings.difficulty == lvl
+        assert settings.asteroid_speed_mult > prev_speed
+        assert settings.initial_asteroids >= prev_asteroids
+        prev_speed = settings.asteroid_speed_mult
+        prev_asteroids = settings.initial_asteroids
+
+    # Test legacy aliases
+    assert DifficultyLevel.CASUAL == DifficultyLevel.CADET
+    assert DifficultyLevel.STANDARD == DifficultyLevel.PILOT
+    assert DifficultyLevel.HARDCORE == DifficultyLevel.VETERAN
+    assert DifficultyLevel.KESSLER_SYNDROME == DifficultyLevel.NIGHTMARE
+
+    # Test from_str and from_dict legacy mappings
+    assert DifficultyLevel.from_str("casual") == DifficultyLevel.CADET
+    assert DifficultyLevel.from_str("standard") == DifficultyLevel.PILOT
+    assert DifficultyLevel.from_str("hardcore") == DifficultyLevel.VETERAN
+    assert DifficultyLevel.from_str("kessler") == DifficultyLevel.NIGHTMARE
+    assert DifficultyLevel.from_str("kessler_syndrome") == DifficultyLevel.NIGHTMARE
+
+
+def test_shatterspace_game_branding_and_menu_labels():
+    """Verify game branding and exact main menu button labels."""
+    from kessler_mpc.settings import GAME_TITLE, GAME_SUBTITLE, GAME_TAGLINE, DifficultyLevel
+
+    assert GAME_TITLE == "SHATTERSPACE"
+    assert GAME_SUBTITLE == "DEEP SPACE SURVIVAL"
+    assert GAME_TAGLINE == "One ship. Endless asteroids. Stay alive."
+
+    settings = GameSettings(difficulty=DifficultyLevel.CADET)
+    app = KesslerGameApp(settings=settings)
+
+    button_texts = [btn.text for btn in app.main_menu_buttons]
+    assert button_texts == [
+        "START GAME",
+        "MANUAL PILOT",
+        "PLAYER + AI",
+        "DIFFICULTY: CADET",
+        "GAME SETTINGS",
+        "CONTROLS",
+        "QUIT GAME",
+    ]
+
+    # Test cycling difficulty from main menu
+    app._cycle_difficulty_action()
+    assert app.settings.difficulty == DifficultyLevel.PILOT
+    assert app.main_menu_buttons[3].text == "DIFFICULTY: PILOT"
+
+    app._cycle_difficulty_action()
+    assert app.settings.difficulty == DifficultyLevel.VETERAN
+    assert app.main_menu_buttons[3].text == "DIFFICULTY: VETERAN"
+
+    app._cycle_difficulty_action()
+    assert app.settings.difficulty == DifficultyLevel.ELITE
+    assert app.main_menu_buttons[3].text == "DIFFICULTY: ELITE"
+
+    app._cycle_difficulty_action()
+    assert app.settings.difficulty == DifficultyLevel.NIGHTMARE
+    assert app.main_menu_buttons[3].text == "DIFFICULTY: NIGHTMARE"
+
+    app._cycle_difficulty_action()
+    assert app.settings.difficulty == DifficultyLevel.CADET
+    assert app.main_menu_buttons[3].text == "DIFFICULTY: CADET"
+

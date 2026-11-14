@@ -41,6 +41,7 @@ class World:
     random_splits: bool = False
     health: float = 100.0
     shields: float = 100.0
+    ast_is_penalty: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=bool))
 
     @property
     def n_ast(self):
@@ -83,6 +84,7 @@ def read_world(ship_state, game_state) -> World:
         ast_size = np.array([a["size"] for a in al], float)
         ast_mass = np.array([a["mass"] for a in al], float)
         ast_rad = np.array([a["radius"] for a in al], float)
+        ast_is_pen = np.array([bool(_get(a, "is_penalty", False)) for a in al], bool)
         others = [s for s in game_state["ships"] if s["id"] != my_id and not _get(s, "is_respawning", False)]
         o_pos = np.array([s["position"] for s in others], float).reshape(-1, 2)
         o_vel = np.array([s["velocity"] for s in others], float).reshape(-1, 2)
@@ -107,6 +109,7 @@ def read_world(ship_state, game_state) -> World:
         random_splits=bool(_get(game_state, "random_asteroid_splits", False)),
         health=float(_get(ship_state, "health", 100.0)),
         shields=float(_get(ship_state, "shields", 100.0)),
+        ast_is_penalty=ast_is_pen if compact is None else np.zeros(len(ast_rad), bool),
     )
 
 

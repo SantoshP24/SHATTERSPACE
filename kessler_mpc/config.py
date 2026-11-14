@@ -12,6 +12,9 @@ CONFIG = {
     "target_selection": "threat",
     "adaptive_risk": True,
     "planner": "mpc",
+    "wrap_boundaries": True,
+    "boundary_margin": 80.0,
+    "ai_aggression": "Balanced",
 
     # ---- Threat assessment ------------------------------------------------------------------------------
     "prediction_horizon_s": 3.0,

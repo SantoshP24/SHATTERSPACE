@@ -76,6 +76,32 @@ def verify_autonomous_game():
     assert app.ai_ship.is_alive
     print("    Mission Restart cleanly restored countdown and ship health!")
 
+    print(">>> Verifying No-Wrap Solid Arena Boundaries & Elastic Asteroid Bouncing...")
+    app.ai_ship.x = 990.0
+    app.ai_ship.speed = 200.0
+    app.ai_ship.heading = 0.0
+    for _ in range(10):
+        app.ai_ship.update_physics(thrust_input=480.0, turn_input=0.0, dt=0.05)
+    assert app.ai_ship.x <= 980.0, f"Ship escaped or wrapped! x={app.ai_ship.x}"
+    print(f"    Ship strictly clamped at arena boundary: x={app.ai_ship.x:.1f} (No wrapping!)")
+
+    # Asteroid bouncing
+    ast = app.debris.spawn_asteroid(position=(960.0, 400.0), velocity=(100.0, 0.0), size=1)
+    for _ in range(10):
+        ast.update(0.05)
+    assert ast.vx < 0, "Asteroid did not bounce off arena wall!"
+    assert ast.x <= 1000.0, "Asteroid wrapped or penetrated border!"
+    print(f"    Asteroid bounced off boundary with reversed velocity: vx={ast.vx:.1f}")
+
+    print(">>> Verifying Settings Menu UI & Persistence...")
+    app.set_state(GameState.SETTINGS)
+    assert app.state == GameState.SETTINGS
+    app.settings_menu.set_tab("SPACESHIP")
+    app.settings_menu.ship_sliders["max_speed"].set_value(320.0)
+    app.settings_menu.apply_to_settings()
+    assert app.settings.ship_max_speed == 320.0
+    print("    Settings updated and saved to settings.json successfully!")
+
     print("\nALL AUTONOMOUS GAMEPLAY VERIFICATIONS COMPLETED SUCCESSFULLY (100% PASS)!")
 
 

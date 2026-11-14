@@ -41,7 +41,7 @@ def assess(w: World, cfg) -> Threats:
     A = w.n_ast
     if A == 0:
         z = np.zeros(0)
-        return Threats(times, traj, spd, tracks, z, z, z, z, z, z, z, z, z, z, z.astype(bool), z.astype(bool))
+        return Threats(times, traj, spd, tracks, z, z, z, z, z, z, z, z, z, z.astype(bool), z.astype(bool))
     d = np.linalg.norm(tracks - traj[:, None, :], axis=-1)            # (F,A)
     vuln = times >= (w.respawn_left - 1e-9) if w.respawning else np.ones(F, bool)
     d = np.where(vuln[:, None], d, np.inf)

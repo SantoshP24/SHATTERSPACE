@@ -19,11 +19,12 @@ from .spaceship import Bullet, Spaceship
 
 @dataclass
 class CollisionEvent:
-    event_type: str  # "ship_asteroid", "bullet_asteroid", "ship_ship"
+    event_type: str  # "ship_asteroid", "bullet_asteroid", "ship_ship", "bullet_red_asteroid", "ship_red_asteroid"
     pos: Tuple[float, float]
     intensity: float = 1.0
     ship_id: Optional[int] = None
     asteroid_size: int = 1
+    penalty: int = 0
 
 
 class PhysicsEngine:
@@ -51,23 +52,66 @@ class PhysicsEngine:
                         # Hit detected!
                         bullet_consumed = True
                         ship.shots_hit += 1
-                        pts = debris_mgr.award_points(a)
-                        ship.score += pts
-                        if pts > 0:
-                            ship.asteroids_destroyed += 1
 
-                        events.append(
-                            CollisionEvent(
-                                event_type="bullet_asteroid",
-                                pos=(b.x, b.y),
-                                intensity=float(a.size),
-                                ship_id=ship.ship_id,
-                                asteroid_size=a.size,
+                        # Check for special Red Penalty Asteroid
+                        if getattr(a, "is_penalty", False):
+                            penalty = (
+                                getattr(debris_mgr.settings, "red_asteroid_shooting_penalty", 5)
+                                if debris_mgr.settings
+                                else 5
                             )
-                        )
+                            ship.score -= penalty
+                            if a in debris_mgr.asteroids:
+                                debris_mgr.asteroids.remove(a)
 
-                        # Split or destroy asteroid
-                        debris_mgr.split_asteroid(a)
+                            events.append(
+                                CollisionEvent(
+                                    event_type="bullet_red_asteroid",
+                                    pos=(b.x, b.y),
+                                    intensity=2.0,
+                                    ship_id=ship.ship_id,
+                                    asteroid_size=a.size,
+                                    penalty=penalty,
+                                )
+                            )
+                            break
+
+                        # Normal asteroid hit resolution
+                        dmg = getattr(b, "damage", 1.0)
+                        if hasattr(a, "health"):
+                            a.health -= dmg
+                            is_destroyed = a.health <= 0.0
+                        else:
+                            is_destroyed = True
+
+                        if is_destroyed:
+                            pts = debris_mgr.award_points(a)
+                            ship.score += pts
+                            if pts > 0:
+                                ship.asteroids_destroyed += 1
+
+                            events.append(
+                                CollisionEvent(
+                                    event_type="bullet_asteroid",
+                                    pos=(b.x, b.y),
+                                    intensity=float(a.size),
+                                    ship_id=ship.ship_id,
+                                    asteroid_size=a.size,
+                                )
+                            )
+
+                            # Split or destroy asteroid
+                            debris_mgr.split_asteroid(a, avoid_pos=(ship.x, ship.y))
+                        else:
+                            events.append(
+                                CollisionEvent(
+                                    event_type="bullet_asteroid",
+                                    pos=(b.x, b.y),
+                                    intensity=0.5,
+                                    ship_id=ship.ship_id,
+                                    asteroid_size=a.size,
+                                )
+                            )
                         break
 
                 if bullet_consumed:
@@ -88,7 +132,7 @@ class PhysicsEngine:
         events: List[CollisionEvent] = []
 
         for ship in ships:
-            if not ship.is_alive or ship.is_respawning:
+            if not ship.is_alive or ship.is_invulnerable:
                 continue
 
             ship_vel = ship.velocity
@@ -98,6 +142,29 @@ class PhysicsEngine:
                 r_sum = ship.params.radius + a.radius
 
                 if dist <= r_sum:
+                    # Check for Red Penalty Asteroid collision
+                    if getattr(a, "is_penalty", False):
+                        penalty = (
+                            getattr(debris_mgr.settings, "red_asteroid_collision_penalty", 10)
+                            if debris_mgr.settings
+                            else 10
+                        )
+                        ship.score -= penalty
+                        if a in debris_mgr.asteroids:
+                            debris_mgr.asteroids.remove(a)
+
+                        events.append(
+                            CollisionEvent(
+                                event_type="ship_red_asteroid",
+                                pos=((ship.x + a.x) * 0.5, (ship.y + a.y) * 0.5),
+                                intensity=2.5,
+                                ship_id=ship.ship_id,
+                                asteroid_size=a.size,
+                                penalty=penalty,
+                            )
+                        )
+                        break
+
                     # Normal vector pointing from asteroid to ship
                     if dist > 1e-4:
                         nx = (ship.x - a.x) / dist
@@ -110,14 +177,28 @@ class PhysicsEngine:
                     rel_vy = ship_vel[1] - a.vy
                     rel_speed = math.hypot(rel_vx, rel_vy)
 
-                    # Damage proportional to size and impact speed
-                    damage = 25.0 * a.size + 0.12 * rel_speed
+                    # Damage based on asteroid size per specification:
+                    # Large (size 3) = 40 HP, Medium (size 2) = 25 HP, Small (size 1) = 10 HP, XL (size 4) = 50 HP
+                    if a.size == 3:
+                        damage = getattr(debris_mgr.settings, "damage_large_asteroid", 40.0) if debris_mgr.settings else 40.0
+                    elif a.size == 2:
+                        damage = getattr(debris_mgr.settings, "damage_medium_asteroid", 25.0) if debris_mgr.settings else 25.0
+                    elif a.size == 1:
+                        damage = getattr(debris_mgr.settings, "damage_small_asteroid", 10.0) if debris_mgr.settings else 10.0
+                    else:
+                        damage = (
+                            getattr(debris_mgr.settings, "damage_large_asteroid", 40.0) * 1.25
+                            if debris_mgr.settings
+                            else 50.0
+                        )
+
                     ship_died = ship.apply_damage(damage)
 
-                    # Physical impulse bounce: push ship and asteroid apart
+                    # Physical impulse bounce: push ship and asteroid apart (clamped to boundaries)
                     push = 80.0 + 15.0 * a.size
-                    ship.x = (ship.x + nx * 12.0) % self.map_w
-                    ship.y = (ship.y + ny * 12.0) % self.map_h
+                    sr = ship.params.radius
+                    ship.x = max(sr, min(self.map_w - sr, ship.x + nx * 12.0))
+                    ship.y = max(sr, min(self.map_h - sr, ship.y + ny * 12.0))
                     ship.speed = max(-100.0, min(100.0, ship.speed * 0.4))
 
                     # Asteroid deflects slightly
@@ -136,7 +217,7 @@ class PhysicsEngine:
 
                     # Smaller asteroids shatter on ship impact
                     if a.size <= 2:
-                        debris_mgr.split_asteroid(a)
+                        debris_mgr.split_asteroid(a, avoid_pos=(ship.x, ship.y))
 
                     if ship_died:
                         if ship.lives > 0:

@@ -27,8 +27,18 @@ class PlayerShip(Spaceship):
         position: Tuple[float, float] = (500.0, 400.0),
         heading: float = 90.0,
         map_size: Tuple[float, float] = (1000.0, 800.0),
+        settings: Optional[Any] = None,
+        **kwargs,
     ):
-        super().__init__(ship_id=ship_id, position=position, heading=heading, map_size=map_size, is_ai=False)
+        super().__init__(
+            ship_id=ship_id,
+            position=position,
+            heading=heading,
+            map_size=map_size,
+            is_ai=False,
+            settings=settings,
+            **kwargs,
+        )
         self.mouse_aim_enabled: bool = True
 
     def process_input(

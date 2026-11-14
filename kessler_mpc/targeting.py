@@ -80,12 +80,30 @@ class TargetSelector:
         else:
             other_min = np.full(A, np.inf)
         expo = 0.25 * (other_min < t_a)                                      # rule 4
-        if c["target_score_mode"] == "product":
-            S = th.T * P * V - c["attack_effort_lambda"] * E - expo
+
+        # Exclude red penalty asteroids: special environmental hazard, never an attack target
+        is_pen = getattr(w, "ast_is_penalty", np.zeros(A, bool))
+
+        # Normalized 5-term target scoring per specification:
+        # ATTACK_SCORE_i = wT * THREAT_i + wH * STRATEGIC_VALUE_i + wP * HIT_PROBABILITY_i - wF * FRAGMENTATION_RISK_i - wE * ATTACK_EFFORT_i
+        threat_term = np.clip(th.T, 0.0, 1.0)
+        strat_val = np.clip(V * (w.ast_size / 4.0), 0.0, 1.0)
+        hit_prob = np.clip(P, 0.0, 1.0)
+        frag_risk = np.clip(f_child, 0.0, 1.0)
+        attack_eff = np.clip(E, 0.0, 1.0)
+
+        wT = float(c.get("weight_target_threat", 0.35))
+        wH = float(c.get("weight_strategic_value", 0.25))
+        wP = float(c.get("weight_hit_prob", 0.25))
+        wF = float(c.get("weight_frag_risk", 0.10))
+        wE = float(c.get("weight_attack_effort", 0.05))
+
+        if c.get("target_score_mode", "") == "product":
+            S = th.T * P * V - c.get("attack_effort_lambda", 0.25) * E - expo
         else:
-            S = (c["weight_collision_risk"] * th.C + c["weight_urgency"] * th.U + c["weight_hit_feasibility"] * P
-                 + c["weight_neutralization_value"] * V - c["attack_effort_lambda"] * E - expo)
-        eligible = (P > 0) & ~unsafe
+            S = wT * threat_term + wH * strat_val + wP * hit_prob - wF * frag_risk - wE * attack_eff - expo
+
+        eligible = (P > 0) & ~unsafe & ~is_pen
         return S, P, t_eng, eligible
 
     def select(self, w: World, th: Threats):
@@ -99,12 +117,13 @@ class TargetSelector:
         c = self.cfg
         Sm = np.where(ok, S, -np.inf)
         best = int(np.argmax(Sm))
-        near = np.where(Sm >= Sm[best] - c["tie_band"])[0]                    # rule 3: prefer small / near on ties
+        near = np.where(Sm >= Sm[best] - c.get("tie_band", 0.05))[0]                    # rule 3: prefer small / near on ties
         if len(near) > 1:
             dist = np.linalg.norm(w.ast_pos[near] - w.pos, axis=1)
             best = int(near[np.lexsort((dist, w.ast_size[near]))[0]])
-        prev = self._match_prev(w)                                            # rule 5: hysteresis
-        if prev is not None and ok[prev] and Sm[prev] >= Sm[best] - c["target_switch_margin"]:
+        prev = self._match_prev(w)                                            # rule 5: hysteresis / target commitment
+        switch_margin = float(c.get("target_switch_threshold", c.get("target_switch_margin", 0.15)))
+        if prev is not None and ok[prev] and Sm[prev] >= Sm[best] - switch_margin:
             best = prev
         self.prev = (w.ast_pos[best].copy(), w.ast_vel[best].copy(), int(w.ast_size[best]))
         return Target(best, float(S[best]), float(P[best]), float(t_eng[best]), int(w.ast_size[best]))

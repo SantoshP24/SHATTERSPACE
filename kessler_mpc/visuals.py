@@ -265,101 +265,114 @@ class Starfield:
         self.width = width
         self.height = height
 
-        # Layer 1: distant tiny dim stars (slow drift)
+        # Layer 1: very distant, dim pin-prick stars
         self.stars_layer1 = [
-            (random.uniform(0, width), random.uniform(0, height), random.uniform(0.4, 0.9), random.uniform(0.1, 0.3))
-            for _ in range(120)
+            (random.uniform(0, width), random.uniform(0, height), random.uniform(0.25, 0.65))
+            for _ in range(200)
         ]
-        # Layer 2: medium twinkling stars
+        # Layer 2: medium stars with colour temperature variation
         self.stars_layer2 = [
             (
                 random.uniform(0, width),
                 random.uniform(0, height),
-                random.uniform(1.0, 1.8),
-                random.choice([(180, 200, 255), (255, 240, 200), (200, 255, 240), (255, 200, 200)]),
-                random.uniform(0, 2 * math.pi),  # Twinkle phase
+                random.uniform(1.0, 1.6),
+                random.choice([
+                    (200, 215, 255),   # cool blue-white
+                    (255, 245, 220),   # warm white
+                    (200, 240, 255),   # ice blue
+                    (255, 220, 190),   # yellow dwarf
+                ]),
+                random.uniform(0, 2 * math.pi),  # twinkle phase
+                random.uniform(1.5, 3.5),         # twinkle speed
             )
-            for _ in range(70)
+            for _ in range(80)
         ]
-        # Layer 3: bright foreground stars with subtle corona
+        # Layer 3: a handful of brighter stars with a subtle cross flare
         self.stars_layer3 = [
             (
                 random.uniform(0, width),
                 random.uniform(0, height),
-                random.uniform(2.0, 3.2),
-                random.choice([(220, 240, 255), (255, 220, 160), (160, 220, 255)]),
+                random.uniform(1.8, 2.8),
+                random.choice([(230, 245, 255), (255, 230, 170), (175, 225, 255)]),
             )
-            for _ in range(25)
+            for _ in range(18)
         ]
 
-        # Nebula clouds (pre-rendered on translucent surface)
+        # Nebula clouds — pre-rendered once at startup, very restrained alpha
         self.nebula_surf = pygame.Surface((width, height), pygame.SRCALPHA)
         self._generate_nebulae()
 
-        # Planet / station background silhouette
+        # Distant planet silhouette in upper-right
         self.planet_surf = pygame.Surface((width, height), pygame.SRCALPHA)
         self._generate_planet()
 
         self.time: float = 0.0
 
     def _generate_nebulae(self) -> None:
-        """Create soft multi-toned space gas clouds."""
-        nebula_centers = [
-            (self.width * 0.25, self.height * 0.3, (30, 15, 60)),     # Purple nebula
-            (self.width * 0.75, self.height * 0.7, (15, 35, 55)),     # Cyan/blue nebula
-            (self.width * 0.5, self.height * 0.85, (40, 20, 30)),     # Crimson nebula
+        """Soft, low-opacity gas clouds — dark space palette."""
+        nebulae = [
+            (self.width * 0.20, self.height * 0.28, 220, (22, 12, 48), 9),   # deep violet
+            (self.width * 0.72, self.height * 0.65, 180, (10, 28, 48), 8),   # midnight blue
+            (self.width * 0.50, self.height * 0.80, 160, (38, 15, 24), 7),   # dark crimson hint
         ]
-        for cx, cy, rgb in nebula_centers:
-            for r in range(180, 10, -20):
-                alpha = int(12 * (1.0 - r / 180.0))
-                pygame.draw.circle(self.nebula_surf, (*rgb, alpha), (int(cx), int(cy)), r)
+        for cx, cy, max_r, rgb, max_alpha in nebulae:
+            steps = range(max_r, 8, -18)
+            for r in steps:
+                # alpha peaks at the edge, fades to centre (gas cloud feel)
+                t = 1.0 - r / max_r
+                alpha = int(max_alpha * math.sin(t * math.pi))
+                pygame.draw.circle(self.nebula_surf, (*rgb, max(0, alpha)), (int(cx), int(cy)), r)
 
     def _generate_planet(self) -> None:
-        """Distant ringed gas giant planet in the upper-right corner."""
-        cx, cy = int(self.width * 0.88), int(self.height * 0.16)
-        r = 60
-        # Planet body with atmosphere glow
-        pygame.draw.circle(self.planet_surf, (20, 30, 45, 160), (cx, cy), r)
-        # Shaded crescent
-        pygame.draw.circle(self.planet_surf, (45, 65, 95, 200), (cx - 8, cy - 8), r - 4)
-        # Ring
-        rect = pygame.Rect(cx - 95, cy - 20, 190, 40)
-        pygame.draw.ellipse(self.planet_surf, (80, 110, 140, 80), rect, 3)
+        """Distant gas giant — muted, unobtrusive."""
+        cx = int(self.width * 0.87)
+        cy = int(self.height * 0.14)
+        r = 52
+        # Dark body with slight atmosphere fringe
+        pygame.draw.circle(self.planet_surf, (18, 26, 42, 180), (cx, cy), r)
+        # Lighter crescent on lit side
+        pygame.draw.circle(self.planet_surf, (38, 56, 82, 160), (cx - 6, cy - 7), r - 5)
+        # Ring — thin, translucent
+        rect = pygame.Rect(cx - 82, cy - 14, 164, 28)
+        pygame.draw.ellipse(self.planet_surf, (68, 95, 125, 55), rect, 2)
 
     def update(self, dt: float) -> None:
         self.time += dt
 
     def draw(self, surface: pygame.Surface, cam_x: float = 0.0, cam_y: float = 0.0) -> None:
         """Render background starfield and celestial elements."""
-        # Fill deep space dark canvas
-        surface.fill((8, 10, 18))
+        # Deep space — very dark blue-black
+        surface.fill((6, 8, 15))
 
-        # Blit nebulae
+        # Nebulae and planet (static layers)
         surface.blit(self.nebula_surf, (0, 0))
         surface.blit(self.planet_surf, (0, 0))
 
-        # Layer 1
-        for x, y, size, alpha_f in self.stars_layer1:
-            px = (x - cam_x * 0.05) % self.width
-            py = (y - cam_y * 0.05) % self.height
-            val = int(255 * alpha_f)
-            surface.set_at((int(px), int(py)), (val, val, val))
+        # Layer 1 — single pixel dim stars, no parallax offset for perf
+        for x, y, brightness in self.stars_layer1:
+            val = int(255 * brightness)
+            px = int(x) % self.width
+            py = int(y) % self.height
+            surface.set_at((px, py), (val, val, int(val * 0.95)))
 
-        # Layer 2 (twinkling)
-        for x, y, size, color, phase in self.stars_layer2:
-            px = (x - cam_x * 0.12) % self.width
-            py = (y - cam_y * 0.12) % self.height
-            twinkle = 0.7 + 0.3 * math.sin(self.time * 3.0 + phase)
-            c = (int(color[0] * twinkle), int(color[1] * twinkle), int(color[2] * twinkle))
+        # Layer 2 — small circles with gentle twinkle
+        for x, y, size, color, phase, speed in self.stars_layer2:
+            px = (x - cam_x * 0.08) % self.width
+            py = (y - cam_y * 0.08) % self.height
+            twinkle = 0.75 + 0.25 * math.sin(self.time * speed + phase)
+            c = (
+                max(0, min(255, int(color[0] * twinkle))),
+                max(0, min(255, int(color[1] * twinkle))),
+                max(0, min(255, int(color[2] * twinkle))),
+            )
             pygame.draw.circle(surface, c, (int(px), int(py)), max(1, int(size)))
 
-        # Layer 3 (bright foreground stars)
+        # Layer 3 — brighter stars, subtle cross diffraction spike
         for x, y, size, color in self.stars_layer3:
-            px = (x - cam_x * 0.20) % self.width
-            py = (y - cam_y * 0.20) % self.height
-            pygame.draw.circle(surface, color, (int(px), int(py)), max(1, int(size)))
-            # Cross glare
+            px = (x - cam_x * 0.16) % self.width
+            py = (y - cam_y * 0.16) % self.height
             ix, iy = int(px), int(py)
-            glow = (color[0] // 3, color[1] // 3, color[2] // 3)
-            pygame.draw.line(surface, glow, (ix - 3, iy), (ix + 3, iy), 1)
-            pygame.draw.line(surface, glow, (ix, iy - 3), (ix, iy + 3), 1)
+            pygame.draw.circle(surface, color, (ix, iy), max(1, int(size)))
+            dim = (color[0] // 5, color[1] // 5, color[2] // 5)
+            pygame.draw.line(surface, dim, (ix - 4, iy), (ix + 4, iy), 1)
+            pygame.draw.line(surface, dim, (ix, iy - 4), (ix, iy + 4), 1)

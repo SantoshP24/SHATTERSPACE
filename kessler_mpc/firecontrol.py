@@ -39,6 +39,19 @@ class FireControl:
         if not ok.any():
             return None
         j = int(np.argmin(np.where(ok, t, np.inf)))
+
+        # Safety check: Avoid shooting red penalty asteroids (and accidental collateral hits on red asteroids)
+        is_pen = getattr(w, "ast_is_penalty", None)
+        if is_pen is not None and len(is_pen) == w.n_ast:
+            if is_pen[j]:
+                return None
+            # Also verify no red asteroid is in line of fire before target j
+            if is_pen.any():
+                pen_idxs = np.where(is_pen)[0]
+                t_pen = t[pen_idxs]
+                if (np.isfinite(t_pen) & (t_pen <= t[j])).any():
+                    return None
+
         return j, float(t[j]), ap1
 
     def decide(self, w: World, thrust, turn, plan: Plan, risk: RiskState, planner, th, target, events) -> bool:

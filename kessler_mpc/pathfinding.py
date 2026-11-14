@@ -61,6 +61,18 @@ class AStarGrid:
         self.blocked.fill(False)
         self.hazard_cost.fill(0.0)
 
+        # Add perimeter wall and corner aversion to hazard costs
+        border_cells = 3
+        self.hazard_cost[:border_cells, :] += 40.0
+        self.hazard_cost[-border_cells:, :] += 40.0
+        self.hazard_cost[:, :border_cells] += 40.0
+        self.hazard_cost[:, -border_cells:] += 40.0
+        # Corners receive double penalty to guarantee AI avoids corner entrapment
+        self.hazard_cost[:border_cells, :border_cells] += 80.0
+        self.hazard_cost[:border_cells, -border_cells:] += 80.0
+        self.hazard_cost[-border_cells:, :border_cells] += 80.0
+        self.hazard_cost[-border_cells:, -border_cells:] += 80.0
+
         n_ast = len(asteroid_radii)
         if n_ast == 0:
             return
@@ -95,9 +107,20 @@ class AStarGrid:
                 for step in range(1, steps + 1):
                     t = (step / steps) * lookahead_s
                     pred_pos = pos + vel * t
-                    # Wrapped or clamped position
-                    pred_x = float(pred_pos[0] % self.map_w)
-                    pred_y = float(pred_pos[1] % self.map_h)
+                    # Reflect off walls rather than wrapping across edges
+                    pred_x = float(pred_pos[0])
+                    pred_y = float(pred_pos[1])
+                    if pred_x < 0:
+                        pred_x = -pred_x
+                    elif pred_x > self.map_w:
+                        pred_x = 2 * self.map_w - pred_x
+                    if pred_y < 0:
+                        pred_y = -pred_y
+                    elif pred_y > self.map_h:
+                        pred_y = 2 * self.map_h - pred_y
+                    pred_x = max(0.0, min(self.map_w, pred_x))
+                    pred_y = max(0.0, min(self.map_h, pred_y))
+
                     p_min_c = max(0, int((pred_x - safe_rad * 1.2) / self.cell_size))
                     p_max_c = min(self.cols - 1, int((pred_x + safe_rad * 1.2) / self.cell_size))
                     p_min_r = max(0, int((pred_y - safe_rad * 1.2) / self.cell_size))

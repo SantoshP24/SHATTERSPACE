@@ -6,6 +6,7 @@ with escalating difficulty, accurate collision mechanics, and VICTORY / DEFEAT s
 from __future__ import annotations
 
 import math
+import random
 import sys
 import time
 from enum import Enum
@@ -20,9 +21,16 @@ from .kessler_ai import KesslerAIController
 from .physics import PhysicsEngine
 from .player import PlayerShip
 from .safe_zone import SafeZone
-from .settings import DifficultyLevel, GameSettings
+from .settings import (
+    DIFFICULTY_DESCRIPTIONS,
+    GAME_SUBTITLE,
+    GAME_TAGLINE,
+    GAME_TITLE,
+    DifficultyLevel,
+    GameSettings,
+)
 from .spaceship import Spaceship
-from .ui import UIButton, UIManager
+from .ui import SettingsMenuUI, UIButton, UIManager
 from .visuals import ParticleSystem, ScreenShake, Starfield
 
 
@@ -34,6 +42,7 @@ class GameState(Enum):
     GAME_OVER = "defeat"  # Backward compatibility alias
     VICTORY = "victory"
     CONTROLS = "controls"
+    SETTINGS = "settings"
 
 
 class GameMode(Enum):
@@ -47,14 +56,14 @@ class KesslerGameApp:
 
     def __init__(self, settings: Optional[GameSettings] = None):
         pygame.init()
-        self.settings = settings or GameSettings()
+        self.settings = settings or GameSettings.load_from_file()
 
         # Window setup
         self.width = self.settings.screen_width
         self.height = self.settings.screen_height
         self.flags = pygame.FULLSCREEN if self.settings.fullscreen else 0
         self.screen = pygame.display.set_mode((self.width, self.height), self.flags)
-        pygame.display.set_caption("Kessler AI: Autonomous Asteroid Survival")
+        pygame.display.set_caption(f"{GAME_TITLE} - {GAME_SUBTITLE}")
 
         self.clock = pygame.time.Clock()
         self.is_running = True
@@ -69,9 +78,18 @@ class KesslerGameApp:
         self.ui = UIManager(screen_width=self.width, screen_height=self.height)
         self.physics = PhysicsEngine(map_size=(self.width, self.height))
 
+        # Settings Menu Interface
+        self.settings_menu = SettingsMenuUI(
+            settings=self.settings,
+            screen_width=self.width,
+            screen_height=self.height,
+            on_back=lambda: self.set_state(GameState.MENU),
+            on_apply=self._on_settings_applied,
+        )
+
         # Gameplay Entities
         self.safe_zone: Optional[SafeZone] = SafeZone(center=(self.width - 140.0, 140.0), radius=75.0, required_dock_time=3.0)
-        self.debris = DebrisManager(map_size=(self.width, self.height))
+        self.debris = DebrisManager(map_size=(self.width, self.height), settings=self.settings)
         self.player_ship: Optional[PlayerShip] = None
         self.ai_ship: Optional[Spaceship] = None
         self.ai_controller: Optional[KesslerAIController] = None
@@ -87,47 +105,58 @@ class KesslerGameApp:
         # Build UI Menus
         self._init_ui_buttons()
 
+    def _on_settings_applied(self) -> None:
+        self.audio.play("ui_click")
+        self.main_menu_buttons[3].text = f"DIFFICULTY: {self.settings.difficulty.value.upper()}"
+        self.countdown_total = self.settings.countdown_duration
+
     def _init_ui_buttons(self) -> None:
         """Create buttons for menus."""
         cx = self.width // 2
-        btn_w, btn_h = 340, 44
+        btn_w, btn_h = 280, 38
         font = self.ui.font_body
 
-        # Main Menu Buttons
+        # Main Menu Buttons — exact requested labels
         self.main_menu_buttons = [
             UIButton(
-                pygame.Rect(cx - btn_w // 2, 300, btn_w, btn_h),
-                "START AUTONOMOUS SURVIVAL",
+                pygame.Rect(cx - btn_w // 2, 235, btn_w, btn_h),
+                "START GAME",
                 lambda: self.start_game(GameMode.AUTONOMOUS),
                 font,
             ),
             UIButton(
-                pygame.Rect(cx - btn_w // 2, 360, btn_w, btn_h),
-                "MANUAL PILOT SURVIVAL",
+                pygame.Rect(cx - btn_w // 2, 282, btn_w, btn_h),
+                "MANUAL PILOT",
                 lambda: self.start_game(GameMode.PLAYER),
                 font,
             ),
             UIButton(
-                pygame.Rect(cx - btn_w // 2, 420, btn_w, btn_h),
-                "PLAYER + AI DUAL MODE",
+                pygame.Rect(cx - btn_w // 2, 329, btn_w, btn_h),
+                "PLAYER + AI",
                 lambda: self.start_game(GameMode.COOP),
                 font,
             ),
             UIButton(
-                pygame.Rect(cx - btn_w // 2, 480, btn_w, btn_h),
+                pygame.Rect(cx - btn_w // 2, 376, btn_w, btn_h),
                 f"DIFFICULTY: {self.settings.difficulty.value.upper()}",
                 self._cycle_difficulty_action,
                 font,
             ),
             UIButton(
-                pygame.Rect(cx - btn_w // 2, 540, btn_w, btn_h),
-                "SYSTEM MANUAL & CONTROLS",
+                pygame.Rect(cx - btn_w // 2, 423, btn_w, btn_h),
+                "GAME SETTINGS",
+                lambda: self.set_state(GameState.SETTINGS),
+                font,
+            ),
+            UIButton(
+                pygame.Rect(cx - btn_w // 2, 470, btn_w, btn_h),
+                "CONTROLS",
                 lambda: self.set_state(GameState.CONTROLS),
                 font,
             ),
             UIButton(
-                pygame.Rect(cx - btn_w // 2, 600, btn_w, btn_h),
-                "QUIT SIMULATION",
+                pygame.Rect(cx - btn_w // 2, 517, btn_w, btn_h),
+                "QUIT GAME",
                 self.quit,
                 font,
             ),
@@ -135,28 +164,29 @@ class KesslerGameApp:
 
         # Pause Menu Buttons
         self.pause_buttons = [
-            UIButton(pygame.Rect(cx - btn_w // 2, 300, btn_w, btn_h), "RESUME MISSION", lambda: self.set_state(GameState.PLAYING), font),
-            UIButton(pygame.Rect(cx - btn_w // 2, 360, btn_w, btn_h), "RESTART MISSION", lambda: self.start_game(self.mode), font),
-            UIButton(pygame.Rect(cx - btn_w // 2, 420, btn_w, btn_h), "TOGGLE OVERLAY [F1]", self._toggle_overlay, font),
-            UIButton(pygame.Rect(cx - btn_w // 2, 480, btn_w, btn_h), "RETURN TO MAIN MENU", lambda: self.set_state(GameState.MENU), font),
+            UIButton(pygame.Rect(cx - btn_w // 2, 270, btn_w, btn_h), "RESUME", lambda: self.set_state(GameState.PLAYING), font),
+            UIButton(pygame.Rect(cx - btn_w // 2, 318, btn_w, btn_h), "RESTART", lambda: self.start_game(self.mode), font),
+            UIButton(pygame.Rect(cx - btn_w // 2, 366, btn_w, btn_h), "GAME SETTINGS", lambda: self.set_state(GameState.SETTINGS), font),
+            UIButton(pygame.Rect(cx - btn_w // 2, 414, btn_w, btn_h), "TOGGLE OVERLAY [F1]", self._toggle_overlay, font),
+            UIButton(pygame.Rect(cx - btn_w // 2, 462, btn_w, btn_h), "MAIN MENU", lambda: self.set_state(GameState.MENU), font),
         ]
 
         # Defeat Menu Buttons
         self.defeat_buttons = [
-            UIButton(pygame.Rect(cx - btn_w // 2, 450, btn_w, btn_h), "RESTART MISSION", lambda: self.start_game(self.mode), font),
-            UIButton(pygame.Rect(cx - btn_w // 2, 510, btn_w, btn_h), "RETURN TO MAIN MENU", lambda: self.set_state(GameState.MENU), font),
+            UIButton(pygame.Rect(cx - btn_w // 2, 420, btn_w, btn_h), "RETRY", lambda: self.start_game(self.mode), font),
+            UIButton(pygame.Rect(cx - btn_w // 2, 470, btn_w, btn_h), "MAIN MENU", lambda: self.set_state(GameState.MENU), font),
         ]
         # Keep game_over_buttons alias for tests
         self.game_over_buttons = self.defeat_buttons
 
         # Victory Menu Buttons
         self.victory_buttons = [
-            UIButton(pygame.Rect(cx - btn_w // 2, 450, btn_w, btn_h), "PLAY AGAIN", lambda: self.start_game(self.mode), font),
-            UIButton(pygame.Rect(cx - btn_w // 2, 510, btn_w, btn_h), "RETURN TO MAIN MENU", lambda: self.set_state(GameState.MENU), font),
+            UIButton(pygame.Rect(cx - btn_w // 2, 430, btn_w, btn_h), "PLAY AGAIN", lambda: self.start_game(self.mode), font),
+            UIButton(pygame.Rect(cx - btn_w // 2, 480, btn_w, btn_h), "MAIN MENU", lambda: self.set_state(GameState.MENU), font),
         ]
 
         # Controls Back Button
-        self.back_button = UIButton(pygame.Rect(cx - 140, 610, 280, btn_h), "BACK TO MENU", lambda: self.set_state(GameState.MENU), font)
+        self.back_button = UIButton(pygame.Rect(cx - 100, 530, 200, btn_h), "BACK", lambda: self.set_state(GameState.MENU), font)
 
     def _cycle_difficulty_action(self) -> None:
         self.audio.play("ui_click")
@@ -189,11 +219,21 @@ class KesslerGameApp:
         spawn_pos = (self.width * 0.5, self.height * 0.5)
 
         # Debris scenario setup
+        self.debris = DebrisManager(
+            map_size=(self.width, self.height),
+            score_table=self.settings.get_score_table(),
+            split_enabled=self.settings.asteroid_split_enabled,
+            wall_bounce=self.settings.asteroid_wall_bounce,
+            base_health=self.settings.asteroid_health,
+            settings=self.settings,
+        )
         preset = self.settings.get_difficulty_preset()
-        self.debris.populate_scenario(count=preset.initial_asteroids, avoid_pos=spawn_pos)
+        self.debris.populate_scenario(count=self.settings.initial_asteroids, avoid_pos=spawn_pos)
+        var = self.settings.asteroid_speed_variation
         for a in self.debris.asteroids:
-            a.vx *= preset.asteroid_speed_mult
-            a.vy *= preset.asteroid_speed_mult
+            jitter = (1.0 + random.uniform(-var, var)) if var > 0 else 1.0
+            a.vx *= preset.asteroid_speed_mult * jitter
+            a.vy *= preset.asteroid_speed_mult * jitter
 
         # Ship configuration based on mode
         if self.mode == GameMode.AUTONOMOUS:
@@ -204,8 +244,14 @@ class KesslerGameApp:
                 heading=90.0,
                 map_size=(self.width, self.height),
                 is_ai=True,
+                settings=self.settings,
             )
-            self.ai_controller = KesslerAIController(map_size=(self.width, self.height), safe_zone=self.safe_zone)
+            self.ai_controller = KesslerAIController(
+                map_size=(self.width, self.height),
+                safe_zone=self.safe_zone,
+                ai_aggression=self.settings.ai_aggression,
+                adaptive_risk=self.settings.adaptive_risk,
+            )
 
         elif self.mode == GameMode.PLAYER:
             self.player_ship = PlayerShip(
@@ -213,6 +259,7 @@ class KesslerGameApp:
                 position=spawn_pos,
                 heading=90.0,
                 map_size=(self.width, self.height),
+                settings=self.settings,
             )
             self.ai_ship = None
             self.ai_controller = None
@@ -223,6 +270,7 @@ class KesslerGameApp:
                 position=(spawn_pos[0] - 50, spawn_pos[1]),
                 heading=90.0,
                 map_size=(self.width, self.height),
+                settings=self.settings,
             )
             self.ai_ship = Spaceship(
                 ship_id=0,
@@ -230,8 +278,14 @@ class KesslerGameApp:
                 heading=90.0,
                 map_size=(self.width, self.height),
                 is_ai=True,
+                settings=self.settings,
             )
-            self.ai_controller = KesslerAIController(map_size=(self.width, self.height), safe_zone=self.safe_zone)
+            self.ai_controller = KesslerAIController(
+                map_size=(self.width, self.height),
+                safe_zone=self.safe_zone,
+                ai_aggression=self.settings.ai_aggression,
+                adaptive_risk=self.settings.adaptive_risk,
+            )
 
     def quit(self) -> None:
         self.is_running = False
@@ -266,11 +320,14 @@ class KesslerGameApp:
                         self.set_state(GameState.PAUSED)
                     elif self.state == GameState.PAUSED:
                         self.set_state(GameState.PLAYING)
-                    elif self.state == GameState.CONTROLS:
+                    elif self.state in (GameState.CONTROLS, GameState.SETTINGS):
                         self.set_state(GameState.MENU)
 
                 elif event.key in (pygame.K_F1, pygame.K_TAB):
                     self._toggle_overlay()
+
+            if self.state == GameState.SETTINGS:
+                self.settings_menu.handle_event(event, mouse_pos)
 
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 if self.state == GameState.MENU:
@@ -303,6 +360,12 @@ class KesslerGameApp:
                 btn.check_hover(mouse_pos)
         elif self.state == GameState.CONTROLS:
             self.back_button.check_hover(mouse_pos)
+        elif self.state == GameState.SETTINGS:
+            self.settings_menu.apply_btn.check_hover(mouse_pos)
+            self.settings_menu.reset_btn.check_hover(mouse_pos)
+            self.settings_menu.back_btn.check_hover(mouse_pos)
+            for btn in self.settings_menu.tab_buttons:
+                btn.check_hover(mouse_pos)
 
     # =========================================================================
     # SIMULATION UPDATE
@@ -311,6 +374,8 @@ class KesslerGameApp:
         self.starfield.update(dt)
         self.visuals.update(dt)
         self.shake.update(dt)
+        self.settings_menu.update(dt)
+        self.ui.update(dt)
 
         if self.state != GameState.PLAYING:
             return
@@ -337,10 +402,13 @@ class KesslerGameApp:
 
         # 3. Dynamic Hazard Escalation over Countdown
         preset = self.settings.get_difficulty_preset()
-        prog = 1.0 - (self.countdown_remaining / max(1.0, self.countdown_total))  # 0.0 -> 1.0
+        if self.settings.difficulty_progression:
+            prog = 1.0 - (self.countdown_remaining / max(1.0, self.countdown_total))  # 0.0 -> 1.0
+        else:
+            prog = 0.0
 
-        max_asteroids = int(preset.initial_asteroids + prog * (preset.max_asteroids - preset.initial_asteroids))
-        spawn_interval = max(3.5, preset.spawn_interval_s * (1.0 - prog * 0.55))
+        max_asteroids = int(self.settings.initial_asteroids + prog * (self.settings.max_asteroids - self.settings.initial_asteroids))
+        spawn_interval = max(2.5, self.settings.spawn_interval_s * (1.0 - prog * 0.55))
 
         # Alert tone every 45s of survival
         if self.elapsed_time - self.last_difficulty_alert >= 45.0:
@@ -406,18 +474,30 @@ class KesslerGameApp:
         # Bullet - Asteroid collisions
         bullet_hits = self.physics.check_bullet_asteroid_collisions(all_ships, self.debris)
         for hit in bullet_hits:
-            self.visuals.emit_explosion(hit.pos, count=int(18 * hit.intensity), speed_mult=1.0)
-            self.audio.play("explosion_small")
-            self.shake.add_trauma(0.12 * hit.intensity)
+            if hit.event_type == "bullet_red_asteroid":
+                self.visuals.emit_explosion(hit.pos, count=28, speed_mult=1.3)
+                self.audio.play("alarm")
+                self.shake.add_trauma(0.3)
+                self.ui.add_notification(f"RED ASTEROID HIT: -{hit.penalty} POINTS", color=(255, 60, 60))
+            else:
+                self.visuals.emit_explosion(hit.pos, count=int(18 * hit.intensity), speed_mult=1.0)
+                self.audio.play("explosion_small")
+                self.shake.add_trauma(0.12 * hit.intensity)
 
         # Ship - Asteroid collisions
         ship_hits = self.physics.check_ship_asteroid_collisions(all_ships, self.debris)
         for hit in ship_hits:
-            self.visuals.emit_explosion(hit.pos, count=int(32 * hit.intensity), speed_mult=1.4)
-            self.visuals.emit_shield_ripple(hit.pos, radius=30.0)
-            self.audio.play("shield_hit")
-            self.audio.play("explosion_large")
-            self.shake.add_trauma(0.45 * hit.intensity)
+            if hit.event_type == "ship_red_asteroid":
+                self.visuals.emit_explosion(hit.pos, count=38, speed_mult=1.6)
+                self.audio.play("alarm")
+                self.shake.add_trauma(0.5)
+                self.ui.add_notification(f"RED ASTEROID COLLISION: -{hit.penalty} POINTS", color=(255, 60, 60))
+            else:
+                self.visuals.emit_explosion(hit.pos, count=int(32 * hit.intensity), speed_mult=1.4)
+                self.visuals.emit_shield_ripple(hit.pos, radius=30.0)
+                self.audio.play("shield_hit")
+                self.audio.play("explosion_large")
+                self.shake.add_trauma(0.45 * hit.intensity)
 
         # Ship - Ship collisions (in co-op)
         self.physics.check_ship_ship_collisions(all_ships)
@@ -464,10 +544,11 @@ class KesslerGameApp:
                     ship=primary_ship,
                     countdown_remaining=self.countdown_remaining,
                     elapsed_time=self.elapsed_time,
-                    asteroids_count=len(self.debris.asteroids),
+                    asteroids_count=len(self.debris.normal_asteroids),
                     ai_telemetry=tel,
                     high_score=self.high_score,
                     safe_zone=self.safe_zone,
+                    red_count=len(self.debris.red_asteroids),
                 )
 
         # 7. Modal Screens
@@ -513,5 +594,8 @@ class KesslerGameApp:
 
         elif self.state == GameState.CONTROLS:
             self.ui.draw_controls(render_surf, self.back_button)
+
+        elif self.state == GameState.SETTINGS:
+            self.settings_menu.draw(render_surf)
 
         pygame.display.flip()

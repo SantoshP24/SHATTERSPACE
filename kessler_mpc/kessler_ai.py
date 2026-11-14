@@ -62,7 +62,8 @@ class KesslerAIController:
         safe_zone: Optional[SafeZone] = None,
         **overrides,
     ):
-        self.cfg = make_config(**{**(config or {}), **overrides})
+        merged_overrides = {"wrap_boundaries": False, **overrides}
+        self.cfg = make_config(**{**(config or {}), **merged_overrides})
         self.map_w, self.map_h = map_size
         self.safe_zone = safe_zone
 
@@ -124,12 +125,14 @@ class KesslerAIController:
             ast_size = np.array([a.get("size", 1) for a in asteroids], dtype=float)
             ast_rad = np.array([a.get("radius", 20.0) for a in asteroids], dtype=float)
             ast_mass = np.array([a.get("mass", 100.0) for a in asteroids], dtype=float)
+            ast_is_pen = np.array([bool(a.get("is_penalty", False)) for a in asteroids], dtype=bool)
         else:
             ast_pos = np.zeros((0, 2), dtype=float)
             ast_vel = np.zeros((0, 2), dtype=float)
             ast_size = np.zeros(0, dtype=float)
             ast_rad = np.zeros(0, dtype=float)
             ast_mass = np.zeros(0, dtype=float)
+            ast_is_pen = np.zeros(0, dtype=bool)
 
         pos = np.array(ship_state.get("position", (0.0, 0.0)), dtype=float)
         vel = np.array(ship_state.get("velocity", (0.0, 0.0)), dtype=float)
@@ -162,6 +165,7 @@ class KesslerAIController:
             random_splits=False,
             health=float(ship_state.get("health", 100.0)),
             shields=float(ship_state.get("shields", 100.0)),
+            ast_is_penalty=ast_is_pen,
         )
 
     def _find_clearest_sector(self, world: World) -> Tuple[float, float]:
@@ -252,7 +256,30 @@ class KesslerAIController:
         self.telemetry.mpc_best_collides = plan.best_collides
         self.telemetry.mpc_trajectory = [(float(f[0]), float(f[1])) for f in plan.ship_frames]
 
-        # 5. Behavior Mode Arbitration: EVADE, SURVIVE, ATTACK, or REPOSITION
+        # 5. Boundary Awareness & Corner Escape Checks
+        center = np.array([self.map_w * 0.5, self.map_h * 0.5])
+        to_center = center - world.pos
+        center_dist = float(np.linalg.norm(to_center))
+        center_dir = to_center / (center_dist + 1e-6)
+        center_heading = math.degrees(math.atan2(to_center[1], to_center[0])) % 360.0
+
+        corner_margin = 135.0
+        wall_margin = 75.0
+        near_left = world.pos[0] < corner_margin
+        near_right = world.pos[0] > self.map_w - corner_margin
+        near_top = world.pos[1] < corner_margin
+        near_bottom = world.pos[1] > self.map_h - corner_margin
+        is_in_corner = (near_left or near_right) and (near_top or near_bottom)
+
+        rad_now = math.radians(world.heading)
+        facing_wall = (
+            (world.pos[0] < wall_margin and math.cos(rad_now) < 0) or
+            (world.pos[0] > self.map_w - wall_margin and math.cos(rad_now) > 0) or
+            (world.pos[1] < wall_margin and math.sin(rad_now) < 0) or
+            (world.pos[1] > self.map_h - wall_margin and math.sin(rad_now) > 0)
+        )
+
+        # 6. Behavior Mode Arbitration: EVADE, SURVIVE, ATTACK, or REPOSITION
         boost_needed = False
 
         # --- A. EVADE (Emergency Collision Override) ---
@@ -268,6 +295,18 @@ class KesslerAIController:
             # Choose direction moving away from collision center
             if np.dot(tan_u, world.pos - most_critical.position) < 0:
                 tan_u = -tan_u
+
+            # Boundary awareness: deflect evasion if it leads toward wall or corner
+            evade_future = world.pos + tan_u * 80.0
+            if (evade_future[0] < wall_margin or evade_future[0] > self.map_w - wall_margin or
+                evade_future[1] < wall_margin or evade_future[1] > self.map_h - wall_margin):
+                rev_future = world.pos - tan_u * 80.0
+                if (rev_future[0] > wall_margin and rev_future[0] < self.map_w - wall_margin and
+                    rev_future[1] > wall_margin and rev_future[1] < self.map_h - wall_margin):
+                    tan_u = -tan_u
+                else:
+                    tan_u = 0.5 * tan_u + 0.9 * center_dir
+                    tan_u = tan_u / (np.linalg.norm(tan_u) + 1e-6)
 
             desired_evade_angle = math.degrees(math.atan2(tan_u[1], tan_u[0])) % 360.0
             turn_err = wrap_angle_deg(desired_evade_angle - world.heading)
@@ -285,6 +324,24 @@ class KesslerAIController:
 
             fire = self.fire.decide(world, thrust, turn, plan, risk, self.planner, raw_threats, target, events)
             return float(thrust), float(turn), bool(fire), boost_needed
+
+        # --- CORNER ESCAPE OVERRIDE ---
+        if is_in_corner:
+            self.telemetry.state = AIBehaviorState.REPOSITION
+            turn_err = wrap_angle_deg(center_heading - world.heading)
+            turn = float(np.clip(turn_err / p.frame_dt, -p.turn_max, p.turn_max))
+            thrust = p.thrust_max if abs(turn_err) < 60.0 else 0.0
+            fire = self.fire.decide(world, thrust, turn, plan, risk, self.planner, raw_threats, target, events)
+            return float(thrust), float(turn), bool(fire), False
+
+        # --- WALL TURNAROUND OVERRIDE ---
+        if facing_wall and plan.best_collides:
+            self.telemetry.state = AIBehaviorState.REPOSITION
+            turn_err = wrap_angle_deg(center_heading - world.heading)
+            turn = float(np.clip(turn_err / p.frame_dt, -p.turn_max, p.turn_max))
+            thrust = p.thrust_max if abs(turn_err) < 60.0 else 0.0
+            fire = self.fire.decide(world, thrust, turn, plan, risk, self.planner, raw_threats, target, events)
+            return float(thrust), float(turn), bool(fire), False
 
         # --- B. SURVIVE (Low Health or Critical Hazard Density) ---
         is_low_health = world.health <= 40.0 or risk.level >= 2
