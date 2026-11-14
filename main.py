@@ -5,6 +5,12 @@ Supports both asynchronous WebAssembly (Pygbag) browser execution and desktop ex
 Features fully autonomous spaceship control with MPC trajectory planning,
 A* route generation, threat ranking, countdown timer survival, and emergency collision override.
 """
+# /// script
+# dependencies = [
+#   "pygame-ce",
+#   "numpy",
+# ]
+# ///
 from __future__ import annotations
 
 import argparse
