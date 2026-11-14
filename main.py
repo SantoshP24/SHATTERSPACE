@@ -1,13 +1,17 @@
 """SHATTERSPACE: Deep Space Survival.
 
 Main entry point. Launches the interactive Pygame application.
+Supports both asynchronous WebAssembly (Pygbag) browser execution and desktop execution.
 Features fully autonomous spaceship control with MPC trajectory planning,
 A* route generation, threat ranking, countdown timer survival, and emergency collision override.
 """
 from __future__ import annotations
 
 import argparse
+import asyncio
 import sys
+
+import pygame
 
 from kessler_mpc.game import GameMode, KesslerGameApp
 from kessler_mpc.settings import (
@@ -59,9 +63,7 @@ def parse_args():
     return parser.parse_args()
 
 
-def main():
-    args = parse_args()
-
+def _build_settings_and_app(args) -> tuple[KesslerGameApp, GameMode]:
     diff_map = {
         "cadet": DifficultyLevel.CADET,
         "pilot": DifficultyLevel.PILOT,
@@ -95,16 +97,42 @@ def main():
 
     app = KesslerGameApp(settings=settings)
 
-    # Launch into selected mode (defaulting to Autonomous AI)
     mode_map = {
         "ai": GameMode.AUTONOMOUS,
         "player": GameMode.PLAYER,
         "coop": GameMode.COOP,
     }
-    app.start_game(mode_map.get(args.mode, GameMode.AUTONOMOUS))
+    mode = mode_map.get(args.mode, GameMode.AUTONOMOUS)
+    return app, mode
 
+
+async def main():
+    """Asynchronous main loop for Pygbag / WebAssembly and desktop execution.
+
+    Yields execution each frame to the browser event loop using `await asyncio.sleep(0)`.
+    """
+    args = parse_args()
+    app, mode = _build_settings_and_app(args)
+    app.start_game(mode)
+
+    # Frame loop yielding to the browser / asyncio event loop each tick
+    while app.is_running:
+        app.step()
+        await asyncio.sleep(0)
+
+    pygame.quit()
+
+
+def main_sync():
+    """Synchronous main loop for desktop environments."""
+    args = parse_args()
+    app, mode = _build_settings_and_app(args)
+    app.start_game(mode)
     app.run()
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        pass

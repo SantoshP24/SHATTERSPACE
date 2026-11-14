@@ -5,6 +5,7 @@ with escalating difficulty, accurate collision mechanics, and VICTORY / DEFEAT s
 """
 from __future__ import annotations
 
+import asyncio
 import math
 import random
 import sys
@@ -291,18 +292,44 @@ class KesslerGameApp:
         self.is_running = False
 
     # =========================================================================
-    # MAIN LOOP
+    # MAIN LOOP (SYNCHRONOUS & ASYNCHRONOUS WEBASSEMBLY SUPPORT)
     # =========================================================================
-    def run(self) -> None:
-        """Main game loop running at stable 60 FPS."""
-        while self.is_running:
+    def step(self, dt: Optional[float] = None) -> bool:
+        """Execute a single frame of events, physics/AI update, and rendering.
+
+        Returns:
+            bool: True if the application is still running, False if terminated.
+        """
+        if not self.is_running:
+            return False
+
+        if dt is None:
             dt = min(self.clock.tick(self.settings.target_fps) / 1000.0, 0.05)
-            self._handle_events(dt)
-            self._update(dt)
-            self._render()
+
+        self._handle_events(dt)
+        self._update(dt)
+        self._render()
+        return self.is_running
+
+    def run(self) -> None:
+        """Synchronous desktop game loop running at stable 60 FPS."""
+        while self.is_running:
+            self.step()
 
         pygame.quit()
         sys.exit(0)
+
+    async def run_async(self) -> None:
+        """Asynchronous game loop for Pygbag / WebAssembly browser deployment.
+
+        Yields control to the browser event loop every frame via asyncio.sleep(0)
+        to prevent blocking the single-threaded web environment.
+        """
+        while self.is_running:
+            self.step()
+            await asyncio.sleep(0)
+
+        pygame.quit()
 
     # =========================================================================
     # EVENT HANDLING
